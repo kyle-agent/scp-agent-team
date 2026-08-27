@@ -52,6 +52,8 @@ POST {KAGENT_BASE_URL}/api/a2a/{namespace}/{agent}/
 | any other data part | `CUSTOM` (`a2a.data_part`) | never dropped |
 | `artifact-update` carrying a valid AgentResult | adopted as the run result | validated before adoption |
 | `artifact-update`, anything else | `CUSTOM` (`a2a.artifact`) + evidence | |
+| data part `{kind:"plan"}`, or a `[PLAN]` block in text | `STATE_SNAPSHOT` carrying the plan | see *the plan* below |
+| data part `{kind:"plan-step"}` | `STATE_SNAPSHOT` with that step updated | |
 | terminal `status-update` | `STEP_FINISHED`, `STATE_SNAPSHOT`, `RUN_FINISHED` | |
 
 ### Cumulative text
@@ -74,6 +76,60 @@ so agents can be taught the structured format one at a time.
 When an agent supplies its own `evidence`, raw tool output is *not* appended to
 it — that output is already in the timeline, and appending it duplicated every
 row in the evidence panel.
+
+## The plan
+
+Tool events can only report what already happened, so a purely reactive timeline
+can show a running step and a finished one but never an upcoming one. Rendering
+`○ Check network path — planned` requires the agent to say in advance what it
+intends to do. That declaration travels in AG-UI **shared state**
+(`STATE_SNAPSHOT`), which is the protocol's mechanism for state that is mutated
+over the life of a run.
+
+Snapshots rather than `STATE_DELTA` patches: a plan is a handful of steps, so
+resending it costs nothing measurable, and every AG-UI client works without a
+JSON Patch implementation. Revisit if plans ever get large.
+
+### How an agent declares one
+
+Two ways, both supported:
+
+```text
+1. A DataPart      { "kind": "plan", "plan": [ {id, label, tool} ] }
+2. A text block    [PLAN]
+                   - [ ] Check pod status (kubernetes_read)
+                   - [ ] Analyse latency (prometheus_query)
+                   [/PLAN]
+```
+
+The text form exists because most kagent agents can only emit text — custom
+DataParts depend on the framework underneath. `composePrompt` asks every agent
+for the block, so this works without changing anything in the cluster. The block
+is stripped from what the Portal displays, so the plan renders as a checklist
+rather than appearing twice.
+
+Text arrives in arbitrary chunks, so `PlanTextFilter` holds back any trailing
+fragment that could still grow into a marker. Without that, a `[PLAN]` split
+across two updates is consumed as prose and the block never opens. The mock
+streams the block three characters at a time to keep this covered.
+
+### How steps advance
+
+- **Automatically**, when a step names a `tool` and that tool fires: `pending →
+  running` on the call, `running → done` on the result. The agent only has to
+  declare the plan once.
+- **Explicitly**, when the agent sends `{kind:"plan-step", id, status, detail}` —
+  needed for steps with no tool, and for reporting a step it decided to skip.
+
+### Steps must not be left pending
+
+When a run ends, any step still `pending` becomes `skipped` and any step still
+`running` becomes `done` (or `failed` if the run failed). A checklist that
+promises work the agent never did is worse than no checklist, so the run's end
+settles every step. There is a test for exactly this.
+
+If the agent declares no plan, there is no plan state and the Portal shows the
+reactive timeline alone — no degradation elsewhere.
 
 ## Tool policy
 

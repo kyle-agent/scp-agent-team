@@ -4,7 +4,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AgentResult, AuditRecord } from '@scp/contracts';
+import type { AgentResult, AuditRecord, PlanStep } from '@scp/contracts';
 import { assertAgentResult } from '@scp/contracts';
 
 const REPO = new URL('../../', import.meta.url).pathname;
@@ -202,9 +202,9 @@ describe('AG-UI Portal access (Mode 2)', () => {
       const results = events.filter((e) => e.type === 'TOOL_CALL_RESULT');
       assert.deepEqual(
         starts.map((e) => e.toolCallName),
-        ['kubernetes_read', 'prometheus_query', 'prometheus_query'],
+        ['kubernetes_read', 'kubernetes_read', 'prometheus_query', 'prometheus_query'],
       );
-      assert.equal(results.length, 3, 'each tool call must produce a result');
+      assert.equal(results.length, starts.length, 'each tool call must produce a result');
       assert.ok(
         events.some((e) => e.type === 'TOOL_CALL_ARGS'),
         'tool arguments must reach the Portal',
@@ -224,6 +224,10 @@ describe('AG-UI Portal access (Mode 2)', () => {
       const result = finished.result as AgentResult;
       assert.equal(result.status, 'completed');
       assert.ok(result.findings!.length >= 2, 'expected findings');
+      assert.ok(
+        result.findings!.some((f) => f.category === 'root_cause'),
+        'a diagnosis should name at least one root cause candidate',
+      );
       assert.ok(result.evidence!.length >= 3, 'expected evidence');
       assert.equal(result.trace.agent_run_id, 'run-e2e-1');
     });
@@ -244,10 +248,50 @@ describe('AG-UI Portal access (Mode 2)', () => {
       }
     });
 
-    test('a STATE_SNAPSHOT carries the result for AG-UI shared state', () => {
-      const snapshot = events.find((e) => e.type === 'STATE_SNAPSHOT');
-      assert.ok(snapshot, 'expected a STATE_SNAPSHOT');
-      assert.ok((snapshot as { snapshot: { result?: unknown } }).snapshot.result);
+    test('the declared plan arrives as shared state and settles honestly', () => {
+      const snapshots = events.filter((e) => e.type === 'STATE_SNAPSHOT');
+      assert.ok(snapshots.length > 1, 'the plan should update as the run proceeds');
+
+      const first = (snapshots[0] as { snapshot: { plan?: PlanStep[] } }).snapshot.plan;
+      assert.ok(first, 'a plan should be declared before any work');
+      assert.deepEqual(
+        first.map((s) => s.status),
+        ['pending', 'pending', 'pending', 'pending'],
+        'the plan starts entirely unstarted - that is the point of declaring it',
+      );
+      assert.ok(
+        first.some((s) => s.label.toLowerCase().includes('network')),
+        'the network step should be visible before it is reached',
+      );
+
+      const final = (snapshots.at(-1) as { snapshot: { plan?: PlanStep[] } }).snapshot.plan!;
+      assert.ok(
+        !final.some((s) => s.status === 'pending'),
+        'no step may still read as upcoming once the run is over',
+      );
+      assert.deepEqual(
+        final.map((s) => s.status),
+        ['done', 'done', 'done', 'skipped'],
+        'three steps ran; the agent explicitly skipped the network check',
+      );
+      assert.ok(final.at(-1)?.detail, 'a skipped step should say why');
+    });
+
+    test('the plan markup never reaches the displayed answer', () => {
+      const shown = events
+        .filter((e) => e.type === 'TEXT_MESSAGE_CONTENT')
+        .map((e) => e.delta as string)
+        .join('');
+      assert.ok(!shown.includes('[PLAN]'), 'plan markers leaked into the answer');
+      assert.ok(!shown.includes('[/PLAN]'), 'plan markers leaked into the answer');
+      assert.ok(!/- \[ \]/.test(shown), 'checklist rows leaked into the answer');
+    });
+
+    test('the terminal STATE_SNAPSHOT carries the result for AG-UI shared state', () => {
+      const snapshots = events.filter((e) => e.type === 'STATE_SNAPSHOT');
+      assert.ok(snapshots.length > 0, 'expected a STATE_SNAPSHOT');
+      // Earlier snapshots carry only the plan; the result lands on the last one.
+      assert.ok((snapshots.at(-1) as { snapshot: { result?: unknown } }).snapshot.result);
     });
   });
 
@@ -347,7 +391,7 @@ describe('AG-UI Portal access (Mode 2)', () => {
       assert.ok(run.duration_ms > 0);
       assert.deepEqual(
         run.tools.map((t) => t.name),
-        ['kubernetes_read', 'prometheus_query', 'prometheus_query'],
+        ['kubernetes_read', 'kubernetes_read', 'prometheus_query', 'prometheus_query'],
         'audited tool calls must match what ran',
       );
 

@@ -2,7 +2,7 @@ import { createRequire } from 'node:module';
 import type { ValidateFunction } from 'ajv';
 import type { Ajv2020 } from 'ajv/dist/2020.js';
 import type { FormatsPlugin } from 'ajv-formats';
-import type { AgentCard, AgentInvocation, AgentResult } from './types.js';
+import type { AgentCard, AgentInvocation, AgentResult, PlanStep } from './types.js';
 
 // The schemas declare JSON Schema 2020-12, so ajv must be loaded from its
 // 2020 dialect entry - the default entry only knows draft-07.
@@ -15,6 +15,7 @@ const addFormats = require('ajv-formats') as FormatsPlugin;
 const agentCardSchema = require('../schemas/agent-card.schema.json');
 const agentInvocationSchema = require('../schemas/agent-invocation.schema.json');
 const agentResultSchema = require('../schemas/agent-result.schema.json');
+const runPlanSchema = require('../schemas/run-plan.schema.json');
 
 const ajv = new Ajv({ allErrors: true, strict: false });
 addFormats(ajv);
@@ -23,6 +24,7 @@ const validators = {
   agentCard: ajv.compile<AgentCard>(agentCardSchema),
   agentInvocation: ajv.compile<AgentInvocation>(agentInvocationSchema),
   agentResult: ajv.compile<AgentResult>(agentResultSchema),
+  runPlan: ajv.compile<PlanStep[]>(runPlanSchema),
 };
 
 export class ContractError extends Error {
@@ -59,6 +61,17 @@ export function assertAgentInvocation(v: unknown): asserts v is AgentInvocation 
 
 export function assertAgentResult(v: unknown): asserts v is AgentResult {
   assertWith<AgentResult>(validators.agentResult, 'AgentResult', v);
+}
+
+export function assertRunPlan(v: unknown): asserts v is PlanStep[] {
+  assertWith<PlanStep[]>(validators.runPlan, 'RunPlan', v);
+}
+
+/** Non-throwing variant, so a malformed plan degrades to no plan instead of killing the run. */
+export function checkRunPlan(v: unknown): { ok: true } | { ok: false; errors: string[] } {
+  return validators.runPlan(v)
+    ? { ok: true }
+    : { ok: false, errors: explain(validators.runPlan) };
 }
 
 /** Non-throwing variant, for places that must degrade rather than fail (e.g. audit). */

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scp.internal/contracts/run-plan.schema.json",
+  "title": "RunPlan",
+  "description": "The steps an agent intends to take, declared before it takes them. Carried in AG-UI shared state so the Portal can show work that has not happened yet.",
+  "type": "array",
+  "maxItems": 20,
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["id", "label", "status"],
+    "properties": {
+      "id": { "type": "string", "minLength": 1 },
+      "label": { "type": "string", "minLength": 1 },
+      "status": {
+        "enum": ["pending", "running", "done", "skipped", "failed"],
+        "description": "A run never ends with a step left 'pending' - unreached steps become 'skipped', so the checklist cannot promise work that was not done."
+      },
+      "tool": {
+        "type": "string",
+        "description": "Optional hint: the tool that carries out this step. Lets the adapter advance the step when that tool fires, without the agent having to report progress explicitly."
+      },
+      "detail": { "type": "string" }
+    }
+  }
+}

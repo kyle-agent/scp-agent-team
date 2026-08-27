@@ -40,7 +40,19 @@ export function composePrompt(invocation: AgentInvocation, card: AgentCard): str
   }
 
   sections.push(
-    `_You are ${card.name}, a shared SCP agent. You are read-only; recommend actions rather than performing them._`,
+    [
+      `_You are ${card.name}, a shared SCP agent. You are read-only; recommend actions rather than performing them._`,
+      '',
+      'Before doing any work, state the steps you intend to take, in this exact block:',
+      '',
+      '[PLAN]',
+      '- [ ] <what the step checks> (<tool the step uses>)',
+      '[/PLAN]',
+      '',
+      'One line per step, in order, at most 20. Name the tool in parentheses when a',
+      'step uses one. The block is rendered as a progress checklist, not as prose, so',
+      'write it first and do not repeat it later.',
+    ].join('\n'),
   );
 
   return sections.join('\n\n');

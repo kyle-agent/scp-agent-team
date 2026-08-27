@@ -3,6 +3,7 @@ import type { AgentCard } from '@scp/contracts';
 import { cancelRun, fetchAgents, runAgent } from './lib/client';
 import { applyEvent, initialRunState, type RunState } from './lib/run-state';
 import { Timeline } from './components/Timeline';
+import { PlanChecklist } from './components/PlanChecklist';
 import { ResultPanel } from './components/ResultPanel';
 
 function newId(): string {
@@ -99,6 +100,27 @@ export function App() {
     },
     [start],
   );
+
+  // The three actions the intro deck calls for. All three continue the same
+  // thread, so kagent keeps the conversation context rather than starting cold.
+  const analyseFurther = useCallback(() => {
+    const text =
+      'Go deeper on the leading root cause: what else would confirm or rule it out?';
+    setTask(text);
+    void start(text);
+  }, [start]);
+
+  const otherHypotheses = useCallback(() => {
+    const text =
+      'What other explanations could produce these symptoms? Rank them and say what would distinguish each.';
+    setTask(text);
+    void start(text);
+  }, [start]);
+
+  const endSession = useCallback(() => {
+    setState(initialRunState);
+    setTask('');
+  }, []);
 
   return (
     <div className="app">
@@ -226,15 +248,29 @@ export function App() {
         </aside>
 
         <section className="panel panel--timeline" ref={timelineRef}>
-          <h2>Timeline</h2>
           {state.error && <div className="error">{state.error}</div>}
+          {state.plan && state.plan.length > 0 && <PlanChecklist steps={state.plan} />}
+          <h2>Timeline</h2>
           <Timeline state={state} />
         </section>
 
         <section className="panel panel--result">
           <h2>Result</h2>
           {state.result ? (
-            <ResultPanel result={state.result} onFollowup={onFollowup} />
+            <>
+              <ResultPanel result={state.result} onFollowup={onFollowup} />
+              <div className="session-actions">
+                <button type="button" className="btn" onClick={analyseFurther} disabled={running}>
+                  Analyse further
+                </button>
+                <button type="button" className="btn" onClick={otherHypotheses} disabled={running}>
+                  Other hypotheses
+                </button>
+                <button type="button" className="btn" onClick={endSession} disabled={running}>
+                  End
+                </button>
+              </div>
+            </>
           ) : (
             <div className="empty">
               Findings, evidence and recommendations appear here when the run completes.

@@ -1,4 +1,5 @@
-import type { AgentResult, Evidence, Severity } from '@scp/contracts';
+import { useState } from 'react';
+import type { AgentResult, Evidence, EvidenceKind, Severity } from '@scp/contracts';
 
 const SEVERITY_ORDER: Record<Severity, number> = {
   critical: 0,
@@ -15,9 +16,13 @@ export function ResultPanel({
   result: AgentResult;
   onFollowup: (text: string) => void;
 }) {
-  const findings = [...(result.findings ?? [])].sort(
+  const sorted = [...(result.findings ?? [])].sort(
     (a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity],
   );
+  // Root-cause candidates answer "why", the rest answer "what else did you see".
+  // Mixing them buries the answer the operator opened the page for.
+  const rootCauses = sorted.filter((f) => f.category === 'root_cause');
+  const findings = sorted.filter((f) => f.category !== 'root_cause');
   const evidenceById = new Map((result.evidence ?? []).map((e) => [e.id, e]));
 
   return (
@@ -30,6 +35,31 @@ export function ResultPanel({
       </header>
 
       <p className="result__summary">{result.summary}</p>
+
+      {rootCauses.length > 0 && (
+        <Section title={`Root cause candidates (${rootCauses.length})`}>
+          <ul className="findings">
+            {rootCauses.map((f) => (
+              <li key={f.id} className="finding finding--root">
+                <div className="finding__head">
+                  <span className={`sev sev--${f.severity}`}>{f.severity}</span>
+                  <span className="finding__title">{f.title}</span>
+                </div>
+                {f.detail && <p className="finding__detail">{f.detail}</p>}
+                {f.evidence_refs && f.evidence_refs.length > 0 && (
+                  <div className="finding__refs">
+                    {f.evidence_refs.map((ref) => (
+                      <a key={ref} href={`#evidence-${ref}`} className="chip">
+                        {evidenceById.get(ref)?.label ?? ref}
+                      </a>
+                    ))}
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
 
       {findings.length > 0 && (
         <Section title={`Findings (${findings.length})`}>
@@ -59,15 +89,7 @@ export function ResultPanel({
         </Section>
       )}
 
-      {(result.evidence?.length ?? 0) > 0 && (
-        <Section title={`Evidence (${result.evidence!.length})`}>
-          <ul className="evidence">
-            {result.evidence!.map((e) => (
-              <EvidenceRow key={e.id} evidence={e} />
-            ))}
-          </ul>
-        </Section>
-      )}
+      {(result.evidence?.length ?? 0) > 0 && <EvidenceSection evidence={result.evidence!} />}
 
       {(result.recommendations?.length ?? 0) > 0 && (
         <Section title="Recommendations">
@@ -122,6 +144,50 @@ export function ResultPanel({
         <span>run {result.trace.agent_run_id}</span>
       </footer>
     </div>
+  );
+}
+
+const EVIDENCE_TABS: { key: EvidenceKind | 'all'; label: string }[] = [
+  { key: 'all', label: 'Evidence' },
+  { key: 'metric', label: 'Metrics' },
+  { key: 'log', label: 'Logs' },
+  { key: 'document', label: 'Docs' },
+];
+
+function EvidenceSection({ evidence }: { evidence: Evidence[] }) {
+  const [tab, setTab] = useState<EvidenceKind | 'all'>('all');
+
+  // Only offer a tab that would actually have something under it.
+  const tabs = EVIDENCE_TABS.filter(
+    (t) => t.key === 'all' || evidence.some((e) => e.kind === t.key),
+  );
+  const shown = tab === 'all' ? evidence : evidence.filter((e) => e.kind === tab);
+
+  return (
+    <section className="result__section">
+      <div className="tabs" role="tablist">
+        {tabs.map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            role="tab"
+            aria-selected={tab === t.key}
+            className={`tab ${tab === t.key ? 'tab--active' : ''}`}
+            onClick={() => setTab(t.key)}
+          >
+            {t.label}
+            <span className="tab__count">
+              {t.key === 'all' ? evidence.length : evidence.filter((e) => e.kind === t.key).length}
+            </span>
+          </button>
+        ))}
+      </div>
+      <ul className="evidence">
+        {shown.map((e) => (
+          <EvidenceRow key={e.id} evidence={e} />
+        ))}
+      </ul>
+    </section>
   );
 }
 

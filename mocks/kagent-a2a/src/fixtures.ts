@@ -1,6 +1,18 @@
 export interface ScriptStep {
   /** Streamed as assistant text. */
   text?: string;
+  /**
+   * Streamed as a `[PLAN]` block inside the text stream, character by character.
+   *
+   * This is the path a real kagent agent takes: most can only emit text, so the
+   * adapter has to recover the plan from it - including when the markers get
+   * split across chunks.
+   */
+  planText?: string;
+  /** Emitted as a structured plan DataPart, for agents that can send one. */
+  planData?: { id?: string; label: string; tool?: string }[];
+  /** Emitted as a plan-step status update. */
+  planStep?: { id: string; status: string; detail?: string };
   /** Emitted as a tool call, then its result. */
   tool?: { name: string; args: Record<string, unknown>; result: unknown };
   delayMs?: number;
@@ -15,6 +27,13 @@ export interface Fixture {
 export const fixtures: Record<string, Fixture> = {
   'architecture-agent': {
     steps: [
+      {
+        planData: [
+          { id: 'std', label: 'Find the applicable SCP standards', tool: 'knowledge_search' },
+          { id: 'compare', label: 'Compare the design against them' },
+          { id: 'gaps', label: 'Report gaps and recommendations' },
+        ],
+      },
       { text: 'Looking up the SCP architecture standards that apply here.\n\n' },
       {
         tool: {
@@ -42,6 +61,8 @@ export const fixtures: Record<string, Fixture> = {
           '- Data classification is unstated, so retention cannot be validated.\n',
         delayMs: 250,
       },
+      { planStep: { id: 'compare', status: 'done' } },
+      { planStep: { id: 'gaps', status: 'done' } },
     ],
     result: {
       status: 'completed',
@@ -52,6 +73,7 @@ export const fixtures: Record<string, Fixture> = {
           id: 'f-1',
           title: 'No dead-letter topic for the ingestion consumer',
           severity: 'high',
+          category: 'gap',
           detail:
             'SCP-ARCH-014 §4.2 requires a DLQ for every at-least-once consumer so poison messages cannot block the partition.',
           evidence_refs: ['ev-std-1'],
@@ -60,6 +82,7 @@ export const fixtures: Record<string, Fixture> = {
           id: 'f-2',
           title: 'Data classification not declared',
           severity: 'medium',
+          category: 'gap',
           detail:
             'SCP-SEC-003 requires a classification label before retention and encryption requirements can be derived.',
           evidence_refs: ['ev-std-2'],
@@ -107,6 +130,17 @@ export const fixtures: Record<string, Fixture> = {
 
   'k8s-agent': {
     steps: [
+      {
+        planText: [
+          '[PLAN]',
+          '- [ ] Check pod status (kubernetes_read)',
+          '- [ ] Check recent deployments (kubernetes_read)',
+          '- [ ] Analyse latency and saturation (prometheus_query)',
+          '- [ ] Check network path (kubernetes_read)',
+          '[/PLAN]',
+          '',
+        ].join('\n'),
+      },
       { text: 'Checking workload health in the target namespace.\n\n' },
       {
         tool: {
@@ -121,6 +155,18 @@ export const fixtures: Record<string, Fixture> = {
           },
         },
         delayMs: 300,
+      },
+      {
+        tool: {
+          name: 'kubernetes_read',
+          args: { verb: 'list', resource: 'deployments', namespace: 'checkout' },
+          result: {
+            deployments: [
+              { name: 'checkout', ready: '3/3', updated: '19m ago', image: 'checkout:1.42.0' },
+            ],
+          },
+        },
+        delayMs: 250,
       },
       { text: 'Pods are up, but one has restarted 6 times. Checking latency.\n\n', delayMs: 200 },
       {
@@ -148,6 +194,15 @@ export const fixtures: Record<string, Fixture> = {
           'That saturation is the bottleneck, not CPU or memory.\n',
         delayMs: 250,
       },
+      {
+        // The agent decides the last step is unnecessary. Reporting that keeps
+        // the checklist honest instead of leaving a step hanging.
+        planStep: {
+          id: 'step-4',
+          status: 'skipped',
+          detail: 'Root cause identified at the database tier; a network check would not change it.',
+        },
+      },
     ],
     result: {
       status: 'completed',
@@ -156,8 +211,9 @@ export const fixtures: Record<string, Fixture> = {
       findings: [
         {
           id: 'f-1',
-          title: 'DB connection pool saturated at 99%',
+          title: 'DB connection pool saturation',
           severity: 'critical',
+          category: 'root_cause',
           detail:
             'in_use/size has sat at 0.99 for 18 minutes. Requests queue waiting for a connection, which shows up as request latency.',
           evidence_refs: ['ev-2', 'ev-3'],
@@ -166,6 +222,7 @@ export const fixtures: Record<string, Fixture> = {
           id: 'f-2',
           title: 'Pod checkout-7d9f-q4rt restarted 6 times',
           severity: 'medium',
+          category: 'observation',
           detail:
             'Restarts correlate with the latency window; likely liveness probe timeouts caused by the same saturation.',
           evidence_refs: ['ev-1'],

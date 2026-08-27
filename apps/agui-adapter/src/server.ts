@@ -195,6 +195,17 @@ const server = app.listen(config.port, () => {
   );
 });
 
+server.on('error', (err: NodeJS.ErrnoException) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(
+      `[agui-adapter] port ${config.port} is already in use. Another adapter is probably still running - stop it, or set PORT.`,
+    );
+  } else {
+    console.error(`[agui-adapter] failed to start: ${err.message}`);
+  }
+  process.exit(1);
+});
+
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(signal, () => {
     for (const controller of activeRuns.values()) controller.abort();

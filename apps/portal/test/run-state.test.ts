@@ -106,3 +106,41 @@ describe('run state reducer', () => {
     assert.equal(state.timeline[0]!.kind === 'step' && state.timeline[0]!.status, 'done');
   });
 });
+
+describe('plan in shared state', () => {
+  const plan = [
+    { id: 'a', label: 'Check pods', status: 'running' as const },
+    { id: 'b', label: 'Check network', status: 'pending' as const },
+  ];
+
+  test('a snapshot carrying only a plan does not clear the result', () => {
+    const withResult = reduce([
+      started,
+      {
+        type: 'STATE_SNAPSHOT',
+        snapshot: { result: { status: 'completed', summary: 's', trace: { trace_id: 't', agent_run_id: 'r' } } },
+      },
+    ]);
+    const withPlan = applyEvent(withResult, { type: 'STATE_SNAPSHOT', snapshot: { plan } });
+    assert.equal(withPlan.plan?.length, 2);
+    assert.equal(withPlan.result?.summary, 's', 'the result must survive a plan-only snapshot');
+  });
+
+  test('a later snapshot replaces the plan wholesale', () => {
+    const state = reduce([
+      started,
+      { type: 'STATE_SNAPSHOT', snapshot: { plan } },
+      {
+        type: 'STATE_SNAPSHOT',
+        snapshot: { plan: [{ id: 'a', label: 'Check pods', status: 'done' }, { id: 'b', label: 'Check network', status: 'skipped' }] },
+      },
+    ]);
+    assert.deepEqual(state.plan?.map((s) => s.status), ['done', 'skipped']);
+  });
+
+  test('a new run clears the previous plan', () => {
+    const state = reduce([started, { type: 'STATE_SNAPSHOT', snapshot: { plan } }]);
+    const next = applyEvent(state, { type: 'RUN_STARTED', threadId: 't', runId: 'r2' });
+    assert.equal(next.plan, undefined);
+  });
+});

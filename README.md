@@ -17,7 +17,7 @@ see [Status](#status).
 
 | Component | Path | What it does |
 |---|---|---|
-| Portal | `apps/portal` | Vite + React. Agent catalog, task input, live timeline, tool activity, evidence, findings, follow-ups, cancel. |
+| Portal | `apps/portal` | Vite + React. Agent catalog, task input, plan checklist, live timeline, tool activity, evidence tabs, root-cause candidates, findings, follow-ups, cancel. |
 | AG-UI Adapter | `apps/agui-adapter` | Auth, contract validation, audit, and the A2A ⇄ AG-UI event translation. No domain logic. |
 | Agent Registry | `packages/agent-registry` | Loads `agents/*/card.json`. The single source of agent definitions for every access mode. |
 | Contracts | `packages/contracts` | JSON Schemas + types for AgentCard, AgentInvocation, AgentResult, AuditRecord. |

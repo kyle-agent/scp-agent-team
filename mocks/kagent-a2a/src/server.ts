@@ -102,6 +102,27 @@ app.post('/api/a2a/:namespace/:agent/', async (req, res) => {
     if (cancelled) break;
     await sleep(step.delayMs ?? 150);
 
+    if (step.planText) {
+      // Character-level chunks on purpose: the `[PLAN]` markers end up split
+      // across updates, which is what the adapter's filter has to survive.
+      for (const chunk of chunkChars(step.planText, 3)) {
+        if (cancelled) break;
+        cumulative += chunk;
+        statusUpdate('working', [{ kind: 'text', text: cumulative }]);
+        await sleep(8);
+      }
+    }
+
+    if (step.planData && !cancelled) {
+      statusUpdate('working', [{ kind: 'data', data: { kind: 'plan', plan: step.planData } }]);
+      await sleep(80);
+    }
+
+    if (step.planStep && !cancelled) {
+      statusUpdate('working', [{ kind: 'data', data: { kind: 'plan-step', ...step.planStep } }]);
+      await sleep(80);
+    }
+
     if (step.text) {
       for (const chunk of chunkText(step.text)) {
         if (cancelled) break;
@@ -161,6 +182,12 @@ app.post('/api/a2a/:namespace/:agent/', async (req, res) => {
 
 function chunkText(text: string): string[] {
   return text.match(/\S+\s*/g) ?? [text];
+}
+
+function chunkChars(text: string, size: number): string[] {
+  const chunks: string[] = [];
+  for (let i = 0; i < text.length; i += size) chunks.push(text.slice(i, i + size));
+  return chunks;
 }
 
 function sleep(ms: number): Promise<void> {

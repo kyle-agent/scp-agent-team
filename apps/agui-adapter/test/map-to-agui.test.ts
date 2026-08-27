@@ -233,3 +233,125 @@ describe('result assembly', () => {
     assert.deepEqual(tail, ['TEXT_MESSAGE_END', 'STEP_FINISHED', 'STATE_SNAPSHOT', 'RUN_FINISHED']);
   });
 });
+
+describe('plan', () => {
+  function planState(events: AguiEvent[]) {
+    const snapshots = events.filter((e) => e.type === 'STATE_SNAPSHOT');
+    const last = snapshots.at(-1) as { snapshot: { plan?: { id: string; label: string; status: string }[] } } | undefined;
+    return last?.snapshot.plan;
+  }
+
+  const declaration = statusUpdate([
+    {
+      kind: 'data',
+      data: {
+        kind: 'plan',
+        plan: [
+          { id: 'pods', label: 'Check pods', tool: 'kubernetes_read' },
+          { id: 'latency', label: 'Check latency', tool: 'prometheus_query' },
+          { id: 'net', label: 'Check network' },
+        ],
+      },
+    },
+  ]);
+
+  test('a declared plan reaches the Portal as shared state, all pending', () => {
+    const events = drain(newMapper(), [declaration]);
+    assert.deepEqual(
+      planState(events)?.map((s) => [s.id, s.status]),
+      [['pods', 'pending'], ['latency', 'pending'], ['net', 'pending']],
+    );
+  });
+
+  test('a step advances when its tool runs, without the agent reporting it', () => {
+    const mapper = newMapper();
+    const events = drain(mapper, [
+      declaration,
+      statusUpdate([{ kind: 'data', data: { kind: 'tool-call', tool_call_id: 'c1', name: 'kubernetes_read', args: {} } }]),
+    ]);
+    assert.equal(planState(events)?.find((s) => s.id === 'pods')?.status, 'running');
+
+    const after = drain(mapper, [
+      statusUpdate([{ kind: 'data', data: { kind: 'tool-result', tool_call_id: 'c1', result: {} } }]),
+    ]);
+    assert.equal(planState(after)?.find((s) => s.id === 'pods')?.status, 'done');
+  });
+
+  test('a tool firing twice does not advance an already-finished step', () => {
+    const mapper = newMapper();
+    drain(mapper, [
+      declaration,
+      statusUpdate([{ kind: 'data', data: { kind: 'tool-call', tool_call_id: 'c1', name: 'prometheus_query', args: {} } }]),
+      statusUpdate([{ kind: 'data', data: { kind: 'tool-result', tool_call_id: 'c1', result: {} } }]),
+    ]);
+    const again = drain(mapper, [
+      statusUpdate([{ kind: 'data', data: { kind: 'tool-call', tool_call_id: 'c2', name: 'prometheus_query', args: {} } }]),
+    ]);
+    assert.equal(planState(again), undefined, 'no plan change means no snapshot');
+  });
+
+  test('the agent can update a step directly', () => {
+    const mapper = newMapper();
+    drain(mapper, [declaration]);
+    const events = drain(mapper, [
+      statusUpdate([
+        { kind: 'data', data: { kind: 'plan-step', id: 'net', status: 'skipped', detail: 'not needed' } },
+      ]),
+    ]);
+    const step = planState(events)?.find((s) => s.id === 'net');
+    assert.equal(step?.status, 'skipped');
+  });
+
+  test('a run never ends with a step still pending', () => {
+    const mapper = newMapper();
+    drain(mapper, [declaration]);
+    const plan = planState([...mapper.finish()]);
+    // Nothing ran, so every step must read as skipped - never as still-to-come.
+    assert.deepEqual(plan?.map((s) => s.status), ['skipped', 'skipped', 'skipped']);
+  });
+
+  test('a step left running when the run ends is settled, not abandoned', () => {
+    const mapper = newMapper();
+    drain(mapper, [
+      declaration,
+      statusUpdate([{ kind: 'data', data: { kind: 'tool-call', tool_call_id: 'c1', name: 'kubernetes_read', args: {} } }]),
+    ]);
+    const plan = planState([...mapper.finish()]);
+    assert.equal(plan?.find((s) => s.id === 'pods')?.status, 'done');
+  });
+
+  test('a failed run marks the in-flight step failed', () => {
+    const mapper = newMapper();
+    drain(mapper, [
+      declaration,
+      statusUpdate([{ kind: 'data', data: { kind: 'tool-call', tool_call_id: 'c1', name: 'kubernetes_read', args: {} } }]),
+    ]);
+    mapper.markFailed('kagent went away');
+    const plan = planState([...mapper.finish()]);
+    assert.equal(plan?.find((s) => s.id === 'pods')?.status, 'failed');
+  });
+
+  test('a plan declared in text is stripped from the displayed answer', () => {
+    const mapper = newMapper();
+    const events = drain(mapper, [
+      statusUpdate([{ kind: 'text', text: 'Starting.\n[PLAN]\n- [ ] Check pods (kubernetes_read)\n[/PLAN]\nDone.' }]),
+    ]);
+    const shown = events
+      .filter((e) => e.type === 'TEXT_MESSAGE_CONTENT')
+      .map((e) => (e as { delta: string }).delta)
+      .join('');
+    assert.ok(!shown.includes('[PLAN]'), `plan markup leaked: ${shown}`);
+    assert.ok(!shown.includes('Check pods'), `plan step leaked into prose: ${shown}`);
+    assert.equal(planState(events)?.length, 1);
+    assert.equal(mapper.buildResult().summary.includes('[PLAN]'), false);
+  });
+
+  test('no plan means no plan state, and the run is otherwise unaffected', () => {
+    const mapper = newMapper();
+    const events = drain(mapper, [statusUpdate([{ kind: 'text', text: 'Just an answer.' }])]);
+    assert.equal(planState(events), undefined);
+    const final = [...mapper.finish()];
+    const snapshot = final.find((e) => e.type === 'STATE_SNAPSHOT') as { snapshot: { plan?: unknown } };
+    assert.equal(snapshot.snapshot.plan, undefined);
+  });
+});

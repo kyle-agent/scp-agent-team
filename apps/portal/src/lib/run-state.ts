@@ -1,4 +1,4 @@
-import type { AgentResult } from '@scp/contracts';
+import type { AgentResult, PlanStep } from '@scp/contracts';
 import type { AguiEvent } from './agui-events';
 
 export type Phase = 'idle' | 'running' | 'completed' | 'failed' | 'cancelled';
@@ -50,6 +50,13 @@ export interface RunState {
   phase: Phase;
   threadId?: string;
   runId?: string;
+  /**
+   * What the agent said it would do, from AG-UI shared state.
+   *
+   * Separate from `timeline` because it is the only thing that can show work
+   * that has not happened yet - the timeline is append-only and reactive.
+   */
+  plan?: PlanStep[];
   timeline: TimelineItem[];
   answer: string;
   result?: AgentResult;
@@ -181,7 +188,11 @@ export function applyEvent(state: RunState, event: AguiEvent): RunState {
       };
 
     case 'STATE_SNAPSHOT':
-      return { ...state, result: event.snapshot?.result ?? state.result };
+      return {
+        ...state,
+        plan: event.snapshot?.plan ?? state.plan,
+        result: event.snapshot?.result ?? state.result,
+      };
 
     case 'CUSTOM':
       return {

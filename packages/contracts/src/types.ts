@@ -44,10 +44,14 @@ export interface AgentInvocation {
 
 export type Severity = 'info' | 'low' | 'medium' | 'high' | 'critical';
 
+export type FindingCategory = 'root_cause' | 'risk' | 'gap' | 'observation';
+
 export interface Finding {
   id: string;
   title: string;
   severity: Severity;
+  /** `root_cause` marks a candidate explanation; the Portal lists those separately. */
+  category?: FindingCategory;
   detail?: string;
   evidence_refs?: string[];
 }
@@ -93,6 +97,36 @@ export interface AgentResult {
   confidence?: number;
   trace: { trace_id: string; agent_run_id: string; request_id?: string };
   error?: { code: string; message: string };
+}
+
+export type PlanStepStatus = 'pending' | 'running' | 'done' | 'skipped' | 'failed';
+
+/**
+ * One step an agent intends to take.
+ *
+ * A plan is what makes "not started yet" renderable. Tool events can only say
+ * what already happened, so without a declared plan a UI can show a running and
+ * a finished step but never an upcoming one.
+ */
+export interface PlanStep {
+  id: string;
+  label: string;
+  status: PlanStepStatus;
+  /** The tool that carries out this step, if any. Used to advance it automatically. */
+  tool?: string;
+  detail?: string;
+}
+
+/**
+ * AG-UI shared state for one run, carried by STATE_SNAPSHOT.
+ *
+ * Snapshots rather than STATE_DELTA patches: a plan is a handful of steps, so
+ * resending it costs nothing measurable, and it keeps every AG-UI client working
+ * without a JSON Patch implementation. Revisit if plans ever get large.
+ */
+export interface RunSharedState {
+  plan?: PlanStep[];
+  result?: AgentResult;
 }
 
 /** Audit record written for every invocation, in both access modes (SPEC §18). */

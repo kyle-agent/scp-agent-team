@@ -1,4 +1,4 @@
-import type { AgentResult } from '@scp/contracts';
+import type { AgentResult, RunSharedState } from '@scp/contracts';
 
 /** Mirrors the adapter's emitted AG-UI event set (apps/agui-adapter/src/agui/events.ts). */
 export type AguiEvent =
@@ -14,5 +14,5 @@ export type AguiEvent =
   | { type: 'TOOL_CALL_ARGS'; toolCallId: string; delta: string; timestamp?: number }
   | { type: 'TOOL_CALL_END'; toolCallId: string; timestamp?: number }
   | { type: 'TOOL_CALL_RESULT'; messageId: string; toolCallId: string; content: string; role?: 'tool'; timestamp?: number }
-  | { type: 'STATE_SNAPSHOT'; snapshot: { result?: AgentResult }; timestamp?: number }
+  | { type: 'STATE_SNAPSHOT'; snapshot: RunSharedState; timestamp?: number }
   | { type: 'CUSTOM'; name: string; value: unknown; timestamp?: number };

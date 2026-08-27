@@ -1,4 +1,12 @@
-import type { AgentCard, AgentInvocation, AgentResult, Evidence } from '@scp/contracts';
+import type {
+  AgentCard,
+  AgentInvocation,
+  AgentResult,
+  Evidence,
+  PlanStep,
+  PlanStepStatus,
+  RunSharedState,
+} from '@scp/contracts';
 import { checkAgentResult } from '@scp/contracts';
 import type { AgentRegistry } from '@scp/agent-registry';
 import type { AguiEvent } from '../agui/events.js';
@@ -10,6 +18,7 @@ import type {
   A2ATextPart,
 } from './a2a.js';
 import { detectToolSignal } from './tool-signal.js';
+import { PlanTextFilter, detectPlanSignal } from './plan.js';
 
 export interface MapperOptions {
   invocation: AgentInvocation;
@@ -37,6 +46,8 @@ export class A2AToAguiMapper {
   private readonly openToolCalls = new Set<string>();
   private readonly emittedText = new Map<string, string>();
   private readonly assistantText: string[] = [];
+  private readonly planFilter = new PlanTextFilter();
+  private plan?: PlanStep[];
   private structuredResult?: AgentResult;
   private currentMessageId?: string;
   private finalState?: string;
@@ -101,6 +112,16 @@ export class A2AToAguiMapper {
       return;
     }
 
+    const planSignal = detectPlanSignal(part);
+    if (planSignal?.kind === 'plan') {
+      yield* this.adoptPlan(planSignal.steps);
+      return;
+    }
+    if (planSignal?.kind === 'plan-step') {
+      yield* this.setStepStatus(planSignal.id, planSignal.status, planSignal.detail);
+      return;
+    }
+
     const signal = detectToolSignal(part);
     if (signal?.phase === 'call') {
       // Defence in depth: a write tool must never execute, even if kagent is
@@ -129,6 +150,7 @@ export class A2AToAguiMapper {
       }
       yield { type: 'TOOL_CALL_END', toolCallId: signal.toolCallId };
       this.openToolCalls.delete(signal.toolCallId);
+      yield* this.advancePlanForTool(signal.name, 'call');
       return;
     }
 
@@ -148,6 +170,7 @@ export class A2AToAguiMapper {
         source: name,
         content: signal.content.slice(0, 20000),
       });
+      yield* this.advancePlanForTool(name, 'result');
       return;
     }
 
@@ -188,6 +211,67 @@ export class A2AToAguiMapper {
     }
   }
 
+  // --- plan -----------------------------------------------------------------
+
+  private *adoptPlan(steps: PlanStep[]): Generator<AguiEvent> {
+    this.plan = steps;
+    yield this.stateSnapshot();
+  }
+
+  private *setStepStatus(
+    id: string,
+    status: PlanStepStatus,
+    detail?: string,
+  ): Generator<AguiEvent> {
+    const step = this.plan?.find((s) => s.id === id);
+    if (!step) return;
+    step.status = status;
+    if (detail) step.detail = detail;
+    yield this.stateSnapshot();
+  }
+
+  /**
+   * Moves a step along when its tool fires.
+   *
+   * Lets the checklist track reality even when the agent never reports progress
+   * explicitly - it only has to declare the plan once, naming the tool per step.
+   */
+  private *advancePlanForTool(
+    toolName: string,
+    phase: 'call' | 'result',
+  ): Generator<AguiEvent> {
+    if (!this.plan) return;
+    const wanted: PlanStepStatus = phase === 'call' ? 'pending' : 'running';
+    const step = this.plan.find((s) => s.tool === toolName && s.status === wanted);
+    if (!step) return;
+    step.status = phase === 'call' ? 'running' : 'done';
+    yield this.stateSnapshot();
+  }
+
+  /**
+   * Settles the plan when the run ends.
+   *
+   * A step left `pending` would tell the user work is still coming when the run
+   * is over, so unreached steps become `skipped` - the checklist must not
+   * promise what was not done.
+   */
+  private settlePlan(): void {
+    if (!this.plan) return;
+    const failed = this.mapStatus() === 'failed';
+    for (const step of this.plan) {
+      if (step.status === 'running') step.status = failed ? 'failed' : 'done';
+      else if (step.status === 'pending') step.status = 'skipped';
+    }
+  }
+
+  private stateSnapshot(): AguiEvent {
+    const state: RunSharedState = {};
+    if (this.plan) state.plan = this.plan.map((step) => ({ ...step }));
+    return { type: 'STATE_SNAPSHOT', snapshot: state };
+  }
+
+  // --- result ---------------------------------------------------------------
+
   /** Accepts an agent-supplied AgentResult only if it actually satisfies the contract. */
   private adoptStructuredResult(candidate: unknown): boolean {
     if (!candidate || typeof candidate !== 'object') return false;
@@ -215,24 +299,34 @@ export class A2AToAguiMapper {
    */
   private *emitText(messageId: string, text: string): Generator<AguiEvent> {
     const already = this.emittedText.get(messageId);
+    let delta: string;
 
     if (already === undefined) {
-      if (this.currentMessageId && this.currentMessageId !== messageId) {
+      this.emittedText.set(messageId, text);
+      delta = text;
+    } else {
+      delta = text.startsWith(already) ? text.slice(already.length) : text;
+      if (!delta) return;
+      this.emittedText.set(messageId, already + delta);
+    }
+
+    // A declared plan may be embedded in the text; it becomes a checklist rather
+    // than prose, so it is stripped from what the Portal displays.
+    const { text: display, steps } = this.planFilter.push(delta);
+    if (display) yield* this.emitDisplayText(messageId, display);
+    if (steps) yield* this.adoptPlan(steps);
+  }
+
+  private *emitDisplayText(messageId: string, display: string): Generator<AguiEvent> {
+    if (this.currentMessageId !== messageId) {
+      if (this.currentMessageId) {
         yield { type: 'TEXT_MESSAGE_END', messageId: this.currentMessageId };
       }
       this.currentMessageId = messageId;
       yield { type: 'TEXT_MESSAGE_START', messageId, role: 'assistant' };
-      this.emittedText.set(messageId, text);
-      this.assistantText.push(text);
-      yield { type: 'TEXT_MESSAGE_CONTENT', messageId, delta: text };
-      return;
     }
-
-    const delta = text.startsWith(already) ? text.slice(already.length) : text;
-    if (!delta) return;
-    this.emittedText.set(messageId, already + delta);
-    this.assistantText.push(delta);
-    yield { type: 'TEXT_MESSAGE_CONTENT', messageId, delta };
+    this.assistantText.push(display);
+    yield { type: 'TEXT_MESSAGE_CONTENT', messageId, delta: display };
   }
 
   markFailed(message: string): void {
@@ -251,14 +345,24 @@ export class A2AToAguiMapper {
     }
     this.openToolCalls.clear();
 
+    // Anything the plan filter was holding back is ordinary text after all.
+    const held = this.planFilter.flush();
+    if (held && this.currentMessageId) {
+      yield* this.emitDisplayText(this.currentMessageId, held);
+    }
+
     if (this.currentMessageId) {
       yield { type: 'TEXT_MESSAGE_END', messageId: this.currentMessageId };
       this.currentMessageId = undefined;
     }
 
+    this.settlePlan();
     const result = this.buildResult();
+    const state: RunSharedState = { result };
+    if (this.plan) state.plan = this.plan.map((step) => ({ ...step }));
+
     yield { type: 'STEP_FINISHED', stepName: this.opts.card.name };
-    yield { type: 'STATE_SNAPSHOT', snapshot: { result } };
+    yield { type: 'STATE_SNAPSHOT', snapshot: state };
     yield {
       type: 'RUN_FINISHED',
       threadId: this.opts.threadId,

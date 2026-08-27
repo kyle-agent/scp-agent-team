@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scp.internal/contracts/agent-card.schema.json",
+  "title": "AgentCard",
+  "description": "Discoverable metadata for a shared SCP agent. Single source of truth for MCP tool descriptions and the Portal agent catalog.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "description", "capabilities", "tools", "risk_level", "version", "runtime"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "description": "Stable identifier. Also the MCP tool name."
+    },
+    "name": { "type": "string", "minLength": 1 },
+    "description": { "type": "string", "minLength": 1 },
+    "capabilities": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1
+    },
+    "tools": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "risk_level": {
+      "enum": ["read-only", "business-write", "infra-write"],
+      "description": "infra-write is forbidden until explicitly enabled by ADR."
+    },
+    "version": { "type": "string" },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "namespace", "name"],
+      "description": "How to reach the agent in kagent.",
+      "properties": {
+        "kind": { "const": "kagent" },
+        "namespace": { "type": "string" },
+        "name": { "type": "string" }
+      }
+    },
+    "blocked_tools": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Tools this agent must never be able to invoke. Enforced in the gateway in addition to RBAC."
+    },
+    "example_tasks": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

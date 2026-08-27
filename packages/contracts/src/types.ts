@@ -1,0 +1,113 @@
+/**
+ * Shared contract types. These mirror the JSON Schemas in ../schemas and are the
+ * single vocabulary used by every access mode (MCP today, AG-UI today, A2A later).
+ */
+
+export type RiskLevel = 'read-only' | 'business-write' | 'infra-write';
+export type AccessMode = 'local-agent' | 'portal';
+
+export interface AgentCard {
+  id: string;
+  name: string;
+  description: string;
+  capabilities: string[];
+  tools: string[];
+  risk_level: RiskLevel;
+  version: string;
+  runtime: { kind: 'kagent'; namespace: string; name: string };
+  blocked_tools?: string[];
+  example_tasks?: string[];
+}
+
+export interface InvocationArtifact {
+  name: string;
+  media_type?: string;
+  content: string;
+}
+
+export interface AgentInvocation {
+  request_id: string;
+  agent: string;
+  task: string;
+  context?: {
+    project?: string;
+    service?: string;
+    environment?: string;
+    namespace?: string;
+    [k: string]: unknown;
+  };
+  artifacts?: InvocationArtifact[];
+  constraints?: string[];
+  actor: { type: AccessMode; user_id: string; client?: string };
+  correlation: { trace_id: string; session_id?: string; parent_run_id?: string };
+}
+
+export type Severity = 'info' | 'low' | 'medium' | 'high' | 'critical';
+
+export interface Finding {
+  id: string;
+  title: string;
+  severity: Severity;
+  detail?: string;
+  evidence_refs?: string[];
+}
+
+export type EvidenceKind =
+  | 'metric'
+  | 'log'
+  | 'manifest'
+  | 'document'
+  | 'command_output'
+  | 'link';
+
+export interface Evidence {
+  id: string;
+  kind: EvidenceKind;
+  label: string;
+  source?: string;
+  content?: string;
+  url?: string;
+}
+
+export interface Recommendation {
+  id: string;
+  action: string;
+  rationale?: string;
+  risk?: RiskLevel;
+}
+
+export interface RequestedCapability {
+  capability: string;
+  parameters?: Record<string, unknown>;
+  requires_approval?: boolean;
+}
+
+export interface AgentResult {
+  status: 'completed' | 'failed' | 'cancelled' | 'needs_input';
+  summary: string;
+  findings?: Finding[];
+  evidence?: Evidence[];
+  recommendations?: Recommendation[];
+  requested_capabilities?: RequestedCapability[];
+  followups?: string[];
+  confidence?: number;
+  trace: { trace_id: string; agent_run_id: string; request_id?: string };
+  error?: { code: string; message: string };
+}
+
+/** Audit record written for every invocation, in both access modes (SPEC §18). */
+export interface AuditRecord {
+  ts: string;
+  trace_id: string;
+  request_id: string;
+  session_id?: string;
+  user: string;
+  access_mode: AccessMode;
+  client?: string;
+  agent: string;
+  agent_run_id?: string;
+  tools: { tool_call_id: string; name: string }[];
+  duration_ms: number;
+  status: string;
+  error?: string;
+}

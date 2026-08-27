@@ -1,0 +1,25 @@
+{
+  "name": "scp-agent-team",
+  "private": true,
+  "version": "0.1.0",
+  "description": "SCP Agent Team - shared organizational agents, dual access (MCP + AG-UI)",
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "mocks/*"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "make dev",
+    "test": "npm run test --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

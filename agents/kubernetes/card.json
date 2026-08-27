@@ -1,0 +1,29 @@
+{
+  "id": "kubernetes_agent",
+  "name": "Kubernetes Agent",
+  "description": "Inspect SCP Kubernetes workloads and Prometheus metrics, review manifests against operational standards, and diagnose runtime problems. Read-only: it can get, list, describe, read logs and query metrics, but cannot change the cluster.",
+  "capabilities": [
+    "manifest-review",
+    "workload-inspection",
+    "incident-diagnosis",
+    "metric-query"
+  ],
+  "tools": ["kubernetes_read", "prometheus_query"],
+  "blocked_tools": [
+    "apply",
+    "patch",
+    "delete",
+    "exec",
+    "rollout_restart",
+    "scale",
+    "helm_upgrade"
+  ],
+  "risk_level": "read-only",
+  "version": "v1",
+  "runtime": { "kind": "kagent", "namespace": "kagent", "name": "k8s-agent" },
+  "example_tasks": [
+    "The checkout service is slow in prod - find the root cause.",
+    "Review this Deployment manifest for operational risk.",
+    "Why are pods in namespace payments restarting?"
+  ]
+}

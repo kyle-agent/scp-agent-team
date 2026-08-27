@@ -1,0 +1,21 @@
+{
+  "id": "architecture_agent",
+  "name": "Architecture Agent",
+  "description": "Review or advise on SCP service architecture using organization standards and shared architecture knowledge. Use this when you need SCP-specific architecture standards, approved patterns, or a review of a proposed design against them. Not for reading local source code - your local agent already has that.",
+  "capabilities": [
+    "architecture-review",
+    "pattern-recommendation",
+    "standards-lookup",
+    "design-checklist"
+  ],
+  "tools": ["knowledge_search"],
+  "blocked_tools": ["kubernetes_write", "helm_upgrade", "argo_submit"],
+  "risk_level": "read-only",
+  "version": "v1",
+  "runtime": { "kind": "kagent", "namespace": "kagent", "name": "architecture-agent" },
+  "example_tasks": [
+    "Review this service design against SCP architecture standards.",
+    "Which approved pattern should a new async ingestion service follow?",
+    "What is missing from this multi-region design?"
+  ]
+}

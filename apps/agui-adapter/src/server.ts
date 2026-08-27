@@ -7,6 +7,7 @@ import {
   assertAgentInvocation,
   type AgentInvocation,
   type AuditRecord,
+  type PlanStep,
 } from '@scp/contracts';
 import { loadConfig } from './config.js';
 import { bearerAuth } from './auth.js';
@@ -28,6 +29,16 @@ const invoker: AgentInvoker = new A2AAgentInvoker({
 const activeRuns = new Map<string, AbortController>();
 /** Portal session -> kagent contextId, so follow-ups continue the conversation. */
 const sessionContexts = new Map<string, string>();
+/**
+ * Threads paused waiting for the user.
+ *
+ * Held server-side rather than handed to the browser: the kagent task id is a
+ * backend identifier, and the Portal has no reason to carry one.
+ */
+const awaitingInput = new Map<
+  string,
+  { taskId?: string; agent: string; plan?: PlanStep[] }
+>();
 
 const app = express();
 app.use(cors({ origin: config.corsOrigins, credentials: false }));
@@ -67,9 +78,18 @@ app.post('/agui/run', async (req, res) => {
   const threadId = typeof body.threadId === 'string' ? body.threadId : randomUUID();
   const runId = typeof body.runId === 'string' ? body.runId : randomUUID();
 
+  // Answering a question resumes the paused kagent task rather than starting a
+  // fresh one, so the agent keeps everything it had already established.
+  const parked = body.resume === true ? awaitingInput.get(threadId) : undefined;
+  if (body.resume === true && !parked) {
+    res.status(409).json({ error: 'nothing is waiting for input on this thread' });
+    return;
+  }
+  if (parked) awaitingInput.delete(threadId);
+
   const invocation: AgentInvocation = {
     request_id: typeof body.request_id === 'string' ? body.request_id : randomUUID(),
-    agent: String(body.agent ?? ''),
+    agent: parked ? parked.agent : String(body.agent ?? ''),
     task: String(body.task ?? ''),
     context: (body.context as AgentInvocation['context']) ?? undefined,
     artifacts: (body.artifacts as AgentInvocation['artifacts']) ?? undefined,
@@ -125,6 +145,8 @@ app.post('/agui/run', async (req, res) => {
       runId,
       signal: controller.signal,
       contextId: sessionContexts.get(threadId),
+      ...(parked?.taskId ? { resumeTaskId: parked.taskId } : {}),
+      ...(parked?.plan ? { resumePlan: parked.plan } : {}),
     });
 
     // Manual iteration: the generator's *return value* is the AgentResult, which
@@ -141,6 +163,15 @@ app.post('/agui/run', async (req, res) => {
 
     const contextId = invoker.contextIdFor(runId);
     if (contextId) sessionContexts.set(threadId, contextId);
+
+    const pending = invoker.pendingFor(runId);
+    if (pending) {
+      awaitingInput.set(threadId, {
+        ...(pending.taskId ? { taskId: pending.taskId } : {}),
+        agent: invocation.agent,
+        ...(pending.plan ? { plan: pending.plan } : {}),
+      });
+    }
   } catch (err) {
     status = 'failed';
     error = (err as Error).message;

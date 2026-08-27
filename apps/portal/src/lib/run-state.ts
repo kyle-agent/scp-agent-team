@@ -1,7 +1,13 @@
-import type { AgentResult, PlanStep } from '@scp/contracts';
+import type { AgentResult, PendingInput, PlanStep } from '@scp/contracts';
 import type { AguiEvent } from './agui-events';
 
-export type Phase = 'idle' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type Phase =
+  | 'idle'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'needs_input';
 
 interface ItemBase {
   id: string;
@@ -75,6 +81,16 @@ export interface RunState {
   activeSubagents: string[];
   /** Every agent that took part, in the order they first appeared. */
   participants: string[];
+  /** What the agent is waiting for. Set only while the run is paused. */
+  pendingInput?: PendingInput;
+  /**
+   * Set by the Portal just before answering a question.
+   *
+   * A resumed run is a new AG-UI run but the same piece of work, so the next
+   * RUN_STARTED must extend the session rather than clear the screen the user
+   * was just reading.
+   */
+  continuation?: boolean;
   answer: string;
   result?: AgentResult;
   error?: string;
@@ -104,6 +120,18 @@ function replace(
   return found ? next : timeline;
 }
 
+/**
+ * Item ids scoped to the run that produced them.
+ *
+ * Protocol ids - message ids, tool call ids - are only unique within a run, but
+ * the timeline spans runs once a session resumes after a pause. Unscoped, a
+ * resumed run reusing a tool call id would both collide as a list key and have
+ * its updates land on the *previous* run's row.
+ */
+function scopedId(state: RunState, id: string): string {
+  return `${state.runId ?? 'run'}:${id}`;
+}
+
 /** Omit that distributes over the union, instead of collapsing to shared keys. */
 type WithoutDepth<T> = T extends unknown ? Omit<T, 'depth'> : never;
 
@@ -118,20 +146,36 @@ export function applyEvent(state: RunState, event: AguiEvent): RunState {
 
   switch (event.type) {
     case 'RUN_STARTED':
-      return {
-        ...initialRunState,
-        phase: 'running',
-        threadId: event.threadId,
-        runId: event.runId,
-        startedAt: at,
-      };
+      return state.continuation
+        ? {
+            ...state,
+            continuation: false,
+            phase: 'running',
+            threadId: event.threadId,
+            runId: event.runId,
+            // The question has been answered, so it is no longer pending; the
+            // previous run's result is superseded by the one now being produced.
+            pendingInput: undefined,
+            result: undefined,
+            error: undefined,
+            endedAt: undefined,
+          }
+        : {
+            ...initialRunState,
+            phase: 'running',
+            threadId: event.threadId,
+            runId: event.runId,
+            startedAt: at,
+          };
 
     case 'STEP_STARTED':
       return {
         ...state,
         timeline: append(state, {
           kind: 'step',
-          id: `step-${event.stepName}`,
+          // Scoped to the run: a resumed run repeats the step name, and the
+          // timeline it is appended to still holds the earlier one.
+          id: scopedId(state, `step-${event.stepName}`),
           name: event.stepName,
           status: 'running',
           at,
@@ -141,7 +185,7 @@ export function applyEvent(state: RunState, event: AguiEvent): RunState {
     case 'STEP_FINISHED':
       return {
         ...state,
-        timeline: replace(state.timeline, `step-${event.stepName}`, (item) => ({
+        timeline: replace(state.timeline, scopedId(state, `step-${event.stepName}`), (item) => ({
           ...item,
           status: 'done',
         })),
@@ -152,7 +196,7 @@ export function applyEvent(state: RunState, event: AguiEvent): RunState {
         ...state,
         timeline: append(state, {
           kind: 'message',
-          id: event.messageId,
+          id: scopedId(state, event.messageId),
           text: '',
           status: 'streaming',
           at,
@@ -163,7 +207,7 @@ export function applyEvent(state: RunState, event: AguiEvent): RunState {
       return {
         ...state,
         answer: state.answer + event.delta,
-        timeline: replace(state.timeline, event.messageId, (item) =>
+        timeline: replace(state.timeline, scopedId(state, event.messageId), (item) =>
           item.kind === 'message' ? { ...item, text: item.text + event.delta } : item,
         ),
       };
@@ -171,7 +215,7 @@ export function applyEvent(state: RunState, event: AguiEvent): RunState {
     case 'TEXT_MESSAGE_END':
       return {
         ...state,
-        timeline: replace(state.timeline, event.messageId, (item) =>
+        timeline: replace(state.timeline, scopedId(state, event.messageId), (item) =>
           item.kind === 'message' ? { ...item, status: 'done' } : item,
         ),
       };
@@ -181,7 +225,7 @@ export function applyEvent(state: RunState, event: AguiEvent): RunState {
         ...state,
         timeline: append(state, {
           kind: 'tool',
-          id: event.toolCallId,
+          id: scopedId(state, event.toolCallId),
           name: event.toolCallName,
           status: 'running',
           at,
@@ -191,7 +235,7 @@ export function applyEvent(state: RunState, event: AguiEvent): RunState {
     case 'TOOL_CALL_ARGS':
       return {
         ...state,
-        timeline: replace(state.timeline, event.toolCallId, (item) =>
+        timeline: replace(state.timeline, scopedId(state, event.toolCallId), (item) =>
           item.kind === 'tool' ? { ...item, args: (item.args ?? '') + event.delta } : item,
         ),
       };
@@ -199,7 +243,7 @@ export function applyEvent(state: RunState, event: AguiEvent): RunState {
     case 'TOOL_CALL_END':
       return {
         ...state,
-        timeline: replace(state.timeline, event.toolCallId, (item) =>
+        timeline: replace(state.timeline, scopedId(state, event.toolCallId), (item) =>
           // A tool is only "done" once its result lands; END just closes the args.
           item.kind === 'tool' && item.result !== undefined
             ? { ...item, status: 'done' }
@@ -210,7 +254,7 @@ export function applyEvent(state: RunState, event: AguiEvent): RunState {
     case 'TOOL_CALL_RESULT':
       return {
         ...state,
-        timeline: replace(state.timeline, event.toolCallId, (item) =>
+        timeline: replace(state.timeline, scopedId(state, event.toolCallId), (item) =>
           item.kind === 'tool'
             ? { ...item, result: event.content, status: 'done' }
             : item,
@@ -222,6 +266,7 @@ export function applyEvent(state: RunState, event: AguiEvent): RunState {
         ...state,
         plan: event.snapshot?.plan ?? state.plan,
         result: event.snapshot?.result ?? state.result,
+        pendingInput: event.snapshot?.pendingInput ?? state.pendingInput,
       };
 
     case 'SUBAGENT_STARTED':
@@ -230,7 +275,7 @@ export function applyEvent(state: RunState, event: AguiEvent): RunState {
         // Appended at the parent's depth; its own work nests one level deeper.
         timeline: append(state, {
           kind: 'subagent',
-          id: event.subagentRunId,
+          id: scopedId(state, event.subagentRunId),
           name: event.name,
           description: event.description,
           status: 'running',
@@ -245,7 +290,7 @@ export function applyEvent(state: RunState, event: AguiEvent): RunState {
     case 'SUBAGENT_FINISHED':
       return {
         ...state,
-        timeline: replace(state.timeline, event.subagentRunId, (item) =>
+        timeline: replace(state.timeline, scopedId(state, event.subagentRunId), (item) =>
           item.kind === 'subagent' ? { ...item, status: 'done' } : item,
         ),
         activeSubagents: state.activeSubagents.filter((id) => id !== event.subagentRunId),
@@ -254,7 +299,7 @@ export function applyEvent(state: RunState, event: AguiEvent): RunState {
     case 'SUBAGENT_ERROR':
       return {
         ...state,
-        timeline: replace(state.timeline, event.subagentRunId, (item) =>
+        timeline: replace(state.timeline, scopedId(state, event.subagentRunId), (item) =>
           item.kind === 'subagent' ? { ...item, status: 'failed', error: event.message } : item,
         ),
         activeSubagents: state.activeSubagents.filter((id) => id !== event.subagentRunId),
@@ -265,7 +310,7 @@ export function applyEvent(state: RunState, event: AguiEvent): RunState {
         ...state,
         timeline: append(state, {
           kind: 'custom',
-          id: `custom-${state.timeline.length}`,
+          id: scopedId(state, `custom-${state.timeline.length}`),
           name: event.name,
           value: event.value,
           at,
@@ -286,7 +331,9 @@ export function applyEvent(state: RunState, event: AguiEvent): RunState {
             ? 'cancelled'
             : result?.status === 'failed'
               ? 'failed'
-              : 'completed';
+              : result?.status === 'needs_input'
+                ? 'needs_input'
+                : 'completed';
       return {
         ...state,
         phase,

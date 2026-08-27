@@ -235,3 +235,109 @@ describe('multi-agent collaboration', () => {
     assert.deepEqual(next.activeSubagents, []);
   });
 });
+
+describe('human-in-the-loop', () => {
+  const paused: AguiEvent[] = [
+    started,
+    { type: 'TEXT_MESSAGE_START', messageId: 'm1', role: 'assistant' },
+    { type: 'TEXT_MESSAGE_CONTENT', messageId: 'm1', delta: 'Looking.' },
+    { type: 'TEXT_MESSAGE_END', messageId: 'm1' },
+    {
+      type: 'STATE_SNAPSHOT',
+      snapshot: {
+        plan: [{ id: 'a', label: 'Find', status: 'done' }, { id: 'b', label: 'Assess', status: 'pending' }],
+        pendingInput: { prompt: 'Which release?', options: [{ value: '1.41.3', label: '1.41.3' }] },
+        result: { status: 'needs_input', summary: 'Which release?', trace: { trace_id: 't', agent_run_id: 'r' } },
+      },
+    },
+    {
+      type: 'RUN_FINISHED',
+      threadId: 't',
+      runId: 'r',
+      result: { status: 'needs_input', summary: 'Which release?', trace: { trace_id: 't', agent_run_id: 'r' } },
+    },
+  ];
+
+  test('a paused run surfaces the question and the needs_input phase', () => {
+    const state = reduce(paused);
+    assert.equal(state.phase, 'needs_input');
+    assert.equal(state.pendingInput?.prompt, 'Which release?');
+  });
+
+  test('answering continues the session instead of clearing it', () => {
+    const before = reduce(paused);
+    // The Portal marks the continuation before starting the resumed run.
+    const resuming = applyEvent(
+      { ...before, continuation: true },
+      { type: 'RUN_STARTED', threadId: 't', runId: 'r2' },
+    );
+
+    assert.equal(resuming.phase, 'running');
+    assert.equal(resuming.runId, 'r2');
+    assert.ok(resuming.timeline.length > 0, 'the transcript the user was reading must survive');
+    assert.equal(resuming.plan?.length, 2, 'the plan must survive');
+    assert.equal(resuming.pendingInput, undefined, 'the question has been answered');
+    assert.equal(resuming.result, undefined, 'the paused result is superseded');
+    assert.equal(resuming.continuation, false, 'the flag is consumed, not sticky');
+  });
+
+  test('a fresh run after a pause still clears everything', () => {
+    const before = reduce(paused);
+    const fresh = applyEvent(before, { type: 'RUN_STARTED', threadId: 't', runId: 'r3' });
+    assert.equal(fresh.timeline.length, 0);
+    assert.equal(fresh.pendingInput, undefined);
+    assert.equal(fresh.plan, undefined);
+  });
+
+  test('timeline ids stay unique when a session continues', () => {
+    const before = reduce([
+      started,
+      { type: 'STEP_STARTED', stepName: 'Kubernetes Agent' },
+      { type: 'STEP_FINISHED', stepName: 'Kubernetes Agent' },
+    ]);
+    const after = reduce(
+      [
+        { type: 'RUN_STARTED', threadId: 't', runId: 'r2' },
+        { type: 'STEP_STARTED', stepName: 'Kubernetes Agent' },
+      ],
+      { ...before, continuation: true },
+    );
+    const ids = after.timeline.map((i) => i.id);
+    assert.equal(new Set(ids).size, ids.length, `duplicate timeline ids: ${ids.join(', ')}`);
+  });
+
+  test('a resumed run reusing a tool call id does not rewrite the earlier row', () => {
+    const before = reduce([
+      started,
+      { type: 'TOOL_CALL_START', toolCallId: 'c1', toolCallName: 'kubernetes_read' },
+      { type: 'TOOL_CALL_RESULT', messageId: 'x', toolCallId: 'c1', content: 'first result' },
+    ]);
+    const after = reduce(
+      [
+        { type: 'RUN_STARTED', threadId: 't', runId: 'r2' },
+        { type: 'TOOL_CALL_START', toolCallId: 'c1', toolCallName: 'prometheus_query' },
+        { type: 'TOOL_CALL_RESULT', messageId: 'y', toolCallId: 'c1', content: 'second result' },
+      ],
+      { ...before, continuation: true },
+    );
+
+    const tools = after.timeline.filter((i) => i.kind === 'tool');
+    assert.equal(tools.length, 2, 'both runs keep their own row');
+    assert.equal(tools[0]!.kind === 'tool' && tools[0]!.result, 'first result');
+    assert.equal(tools[1]!.kind === 'tool' && tools[1]!.result, 'second result');
+    const ids = after.timeline.map((i) => i.id);
+    assert.equal(new Set(ids).size, ids.length);
+  });
+
+  test('the resumed run appends to the same timeline', () => {
+    const before = reduce(paused);
+    const after = reduce(
+      [
+        { type: 'RUN_STARTED', threadId: 't', runId: 'r2' },
+        { type: 'TOOL_CALL_START', toolCallId: 'c1', toolCallName: 'prometheus_query' },
+      ],
+      { ...before, continuation: true },
+    );
+    assert.equal(after.timeline.length, before.timeline.length + 1);
+  });
+});

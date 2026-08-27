@@ -8,7 +8,10 @@
     "incident-diagnosis",
     "metric-query"
   ],
-  "tools": ["kubernetes_read", "prometheus_query"],
+  "tools": [
+    "kubernetes_read",
+    "prometheus_query"
+  ],
   "blocked_tools": [
     "apply",
     "patch",
@@ -20,10 +23,15 @@
   ],
   "risk_level": "read-only",
   "version": "v1",
-  "runtime": { "kind": "kagent", "namespace": "kagent", "name": "k8s-agent" },
+  "runtime": {
+    "kind": "kagent",
+    "namespace": "kagent",
+    "name": "k8s-agent"
+  },
   "example_tasks": [
     "The checkout service is slow in prod - find the root cause.",
     "Review this Deployment manifest for operational risk.",
-    "Why are pods in namespace payments restarting?"
+    "Why are pods in namespace payments restarting?",
+    "checkout is degraded - should we roll back?"
   ]
 }

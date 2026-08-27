@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scp.internal/contracts/pending-input.schema.json",
+  "title": "PendingInput",
+  "description": "What an agent is waiting for from the user before it can continue. Carried in AG-UI shared state when a run pauses.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["prompt"],
+  "properties": {
+    "prompt": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The question, in the agent's own words."
+    },
+    "options": {
+      "type": "array",
+      "maxItems": 10,
+      "description": "Choices the agent offers. Absent means a free-text answer.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["value", "label"],
+        "properties": {
+          "value": { "type": "string", "minLength": 1 },
+          "label": { "type": "string", "minLength": 1 },
+          "detail": { "type": "string" },
+          "risk": { "enum": ["read-only", "business-write", "infra-write"] }
+        }
+      }
+    },
+    "allow_free_text": {
+      "type": "boolean",
+      "description": "Whether an answer outside the offered options is accepted. Defaults to true when there are no options."
+    },
+    "capability": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "The capability being asked about, when this is an approval rather than a question."
+    }
+  }
+}

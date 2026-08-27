@@ -215,6 +215,72 @@ did not match. Nothing is lost — unmatched data parts arrive as `CUSTOM` event
 and are visible in the Portal timeline as raw JSON. Read one, then add its shape
 to `detectToolSignal` and a case to `apps/agui-adapter/test/map-to-agui.test.ts`.
 
+## Human-in-the-loop
+
+An agent that cannot proceed without an answer pauses. A2A already models this:
+the task enters `input-required` and waits. No protocol had to be invented.
+
+```text
+Portal ── POST /agui/run ──► kagent task            run 1
+                                  │
+                    status: input-required          the stream ends here
+                                  │
+Portal shows the question, waits for the operator
+                                  │
+Portal ── POST /agui/run {resume:true} ──► same taskId   run 2
+                                  │
+                            task continues
+```
+
+### Two runs, one piece of work
+
+The paused run ends properly — `RUN_FINISHED` with `status: "needs_input"` —
+rather than holding the SSE connection open. An operator may take minutes, and a
+held connection would collide with request timeouts, proxies, and reloads. AG-UI
+models a thread as many runs, so a resume is simply the next run in the thread.
+
+The Portal marks the next run as a continuation so `RUN_STARTED` extends the
+session instead of clearing the screen the operator is reading. Because the
+timeline now spans runs, item ids are scoped by run: protocol ids are only
+unique *within* a run, and a resumed run reusing a tool call id would otherwise
+have its updates land on the previous run's row.
+
+### What the agent has to send
+
+Either a DataPart when it pauses:
+
+```json
+{ "kind": "input-request", "prompt": "Which release should I assess?",
+  "options": [{ "value": "1.41.3", "label": "checkout:1.41.3", "detail": "last known good" }],
+  "allow_free_text": true }
+```
+
+…or nothing special at all: an agent that just stops in `input-required` after
+asking in prose gets a working prompt from that text, only without offered
+choices. The prompt is *not* also streamed into the transcript — it belongs in
+the ask panel, not in the answer.
+
+### What the adapter guarantees
+
+- The kagent task id stays server-side. The browser says which thread it is
+  answering; it never handles a backend identifier.
+- Answering resumes the **same task**, so the agent keeps everything it had
+  already established rather than starting over.
+- A plan paused mid-way keeps its remaining steps `pending`. A paused run is not
+  over, so writing them off as `skipped` would be a lie.
+- Progress made before the pause survives it: the plan is parked with the task
+  and restored into the resumed run. If a resumed task replays the text it
+  already sent — plan block and all — the identical plan keeps the statuses it
+  already had rather than resetting to all-pending.
+- Answering when nothing is waiting is a `409`, not a silently new run.
+
+### Where this goes next
+
+The same pause carries an approval. A `capability` on the request is rendered
+with the question, which is what Phase 3's `requestApproval` and Phase 4's Argo
+runbooks need. Nothing in the transport changes for that — only what the agent
+puts in the request.
+
 ## Sessions and cancellation
 
 `threadId` is one Portal session. The adapter remembers the kagent `contextId`

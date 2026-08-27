@@ -13,6 +13,18 @@ export interface ScriptStep {
   planData?: { id?: string; label: string; tool?: string }[];
   /** Emitted as a plan-step status update. */
   planStep?: { id: string; status: string; detail?: string };
+  /**
+   * Pauses the task in `input-required` and waits for the user.
+   *
+   * Everything after this step runs only once an answer arrives, on the same
+   * task - which is what lets the agent keep what it had already established.
+   */
+  askUser?: {
+    prompt: string;
+    options?: { value: string; label: string; detail?: string; risk?: string }[];
+    allow_free_text?: boolean;
+    capability?: Record<string, unknown>;
+  };
   /** Emitted as a tool call, then its result. */
   tool?: { name: string; args: Record<string, unknown>; result: unknown };
   /**
@@ -321,6 +333,148 @@ export const fixtures: Record<string, Fixture> = {
     },
   },
 };
+
+/**
+ * Scenarios that pause for the user, selected when the task mentions one.
+ *
+ * Kept separate so the ordinary demos stay non-interactive: a portal that always
+ * stops to ask is tiring to demo and would hide the streaming path.
+ */
+export const hitlFixtures: { match: RegExp; agent: string; fixture: Fixture }[] = [
+  {
+    agent: 'k8s-agent',
+    match: /roll ?back|revert|승인|approve/i,
+    fixture: {
+      steps: [
+        {
+          planText: [
+            '[PLAN]',
+            '- [ ] Find the rollback candidates (kubernetes_read)',
+            '- [ ] Confirm the target with the operator',
+            '- [ ] Assess the chosen release (prometheus_query)',
+            '[/PLAN]',
+            '',
+          ].join('\n'),
+        },
+        { text: 'Looking at the deployment history for checkout.\n\n' },
+        {
+          tool: {
+            name: 'kubernetes_read',
+            args: { verb: 'get', resource: 'replicasets', namespace: 'checkout' },
+            result: {
+              revisions: [
+                { revision: 42, image: 'checkout:1.42.0', age: '19m', status: 'current, degraded' },
+                { revision: 41, image: 'checkout:1.41.9', age: '1d', status: 'unverified in prod' },
+                { revision: 40, image: 'checkout:1.41.3', age: '3d', status: 'last known good' },
+              ],
+            },
+          },
+          delayMs: 300,
+        },
+        {
+          text:
+            'There are two plausible rollback targets and they are not equivalent, ' +
+            'so I need you to choose before I evaluate.\n\n',
+          delayMs: 250,
+        },
+        {
+          // The agent genuinely cannot proceed: picking for the operator would
+          // be guessing at their risk tolerance.
+          askUser: {
+            prompt:
+              'Which release should I assess as the rollback target for checkout?',
+            options: [
+              {
+                value: '1.41.3',
+                label: 'checkout:1.41.3 (revision 40)',
+                detail: 'Last known good, 3 days old. Loses two days of changes.',
+                risk: 'read-only',
+              },
+              {
+                value: '1.41.9',
+                label: 'checkout:1.41.9 (revision 41)',
+                detail: 'Yesterday. Smaller change, but never verified under production load.',
+                risk: 'read-only',
+              },
+            ],
+            allow_free_text: true,
+          },
+        },
+        // A step with no tool cannot advance by itself; the agent reports it.
+        { planStep: { id: 'step-2', status: 'done', detail: 'Operator selected the target.' } },
+        { text: 'Assessing that release against the current incident.\n\n', delayMs: 200 },
+        {
+          tool: {
+            name: 'prometheus_query',
+            args: {
+              query: 'sum(db_connection_pool_size{service="checkout"}) by (version)',
+            },
+            result: {
+              '1.41.3': { pool_size: 80, p95_latency_s: 0.27 },
+              '1.42.0': { pool_size: 20, p95_latency_s: 2.41 },
+              note: 'the pool ceiling was lowered in 1.42.0',
+            },
+          },
+          delayMs: 350,
+        },
+        {
+          text:
+            'That release ran with a pool ceiling of 80 against the current 20, which is ' +
+            'consistent with the saturation we measured.\n',
+          delayMs: 200,
+        },
+      ],
+      result: {
+        status: 'completed',
+        summary:
+          'The chosen release predates the connection-pool ceiling change that explains the incident. Rolling back to it should restore p95 latency, but the pool ceiling is the actual defect and will recur on the next deploy without a fix.',
+        findings: [
+          {
+            id: 'f-1',
+            title: 'Pool ceiling lowered from 80 to 20 in 1.42.0',
+            severity: 'critical',
+            category: 'root_cause',
+            detail:
+              'The chosen rollback target ran with a ceiling of 80 and a p95 of 0.27s. The current release runs with 20 and 2.41s.',
+            evidence_refs: ['ev-1'],
+          },
+        ],
+        evidence: [
+          {
+            id: 'ev-1',
+            kind: 'metric',
+            label: 'Pool size and latency by version',
+            source: 'prometheus_query',
+            content: '1.41.3: pool 80, p95 0.27s\n1.42.0: pool 20, p95 2.41s',
+          },
+        ],
+        recommendations: [
+          {
+            id: 'r-1',
+            action: 'Roll back checkout to the release you selected.',
+            rationale: 'Restores the pool ceiling that the current release lowered.',
+            risk: 'infra-write',
+          },
+          {
+            id: 'r-2',
+            action: 'Fix the pool ceiling before rolling forward again.',
+            rationale: 'A rollback alone leaves the defect to return on the next deploy.',
+            risk: 'infra-write',
+          },
+        ],
+        requested_capabilities: [
+          {
+            capability: 'executeRunbook',
+            parameters: { runbook_id: 'rollback-deployment', service: 'checkout' },
+            requires_approval: true,
+          },
+        ],
+        followups: ['What changed the pool ceiling in 1.42.0?'],
+        confidence: 0.84,
+      },
+    },
+  },
+];
 
 export const defaultFixture: Fixture = {
   steps: [{ text: 'Mock agent has no scripted fixture for this agent name.\n' }],

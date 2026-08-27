@@ -380,6 +380,97 @@ describe('AG-UI Portal access (Mode 2)', () => {
     });
   });
 
+  describe('human-in-the-loop', () => {
+    const thread = 'thread-hitl';
+    let paused: AguiEvent[];
+    let resumed: AguiEvent[];
+
+    before(async () => {
+      const first = await runAgent({
+        agent: 'kubernetes_agent',
+        task: 'checkout is degraded - should we roll back?',
+        threadId: thread,
+        runId: 'run-hitl-1',
+      });
+      assert.equal(first.status, 200);
+      paused = first.events;
+
+      // Answering carries no task id: the adapter holds that server-side, so the
+      // browser never handles a backend identifier.
+      const second = await runAgent({
+        resume: true,
+        task: '1.41.3',
+        threadId: thread,
+        runId: 'run-hitl-2',
+      });
+      assert.equal(second.status, 200);
+      resumed = second.events;
+    });
+
+    test('the run pauses and says what it needs', () => {
+      const finished = paused.at(-1) as { type: string; result: AgentResult };
+      assert.equal(finished.type, 'RUN_FINISHED');
+      assert.equal(finished.result.status, 'needs_input');
+
+      const snapshot = paused
+        .filter((e) => e.type === 'STATE_SNAPSHOT')
+        .at(-1) as { snapshot: { pendingInput?: { prompt: string; options?: { value: string }[] } } };
+      const ask = snapshot.snapshot.pendingInput;
+      assert.ok(ask, 'a paused run must say what it is waiting for');
+      assert.match(ask.prompt, /which release/i);
+      assert.deepEqual(ask.options?.map((o) => o.value), ['1.41.3', '1.41.9']);
+    });
+
+    test('the plan is not written off while the run is paused', () => {
+      const snapshot = paused
+        .filter((e) => e.type === 'STATE_SNAPSHOT')
+        .at(-1) as { snapshot: { plan?: PlanStep[] } };
+      assert.deepEqual(
+        snapshot.snapshot.plan?.map((s) => s.status),
+        ['done', 'pending', 'pending'],
+        'work still to come must not read as skipped',
+      );
+    });
+
+    test('answering resumes the same task and completes it', () => {
+      const finished = resumed.at(-1) as { type: string; result: AgentResult };
+      assert.equal(finished.type, 'RUN_FINISHED');
+      assert.equal(finished.result.status, 'completed');
+      assert.ok(
+        finished.result.findings?.some((f) => f.category === 'root_cause'),
+        'the resumed run should reach a conclusion',
+      );
+    });
+
+    test('the resumed run keeps what the agent already established', () => {
+      const snapshot = resumed
+        .filter((e) => e.type === 'STATE_SNAPSHOT')
+        .at(-1) as { snapshot: { plan?: PlanStep[] } };
+      assert.deepEqual(
+        snapshot.snapshot.plan?.map((s) => s.status),
+        ['done', 'done', 'done'],
+        'the step completed before the pause must still read as done',
+      );
+    });
+
+    test('the resumed run does not replay what was already shown', () => {
+      const text = resumed
+        .filter((e) => e.type === 'TEXT_MESSAGE_CONTENT')
+        .map((e) => e.delta as string)
+        .join('');
+      assert.ok(
+        !text.includes('Looking at the deployment history'),
+        'the user would see the transcript twice',
+      );
+      assert.match(text, /assessing that release/i);
+    });
+
+    test('answering when nothing is waiting is refused', async () => {
+      const res = await runAgent({ resume: true, task: 'again', threadId: thread, runId: 'x' });
+      assert.equal(res.status, 409);
+    });
+  });
+
   describe('cancellation (SPEC 10)', () => {
     test('cancelling a run stops the stream and audits it as cancelled', async () => {
       const runId = 'run-cancel-1';

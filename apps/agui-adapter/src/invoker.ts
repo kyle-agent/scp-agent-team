@@ -1,4 +1,4 @@
-import type { AgentInvocation, AgentResult } from '@scp/contracts';
+import type { AgentInvocation, AgentResult, PendingInput, PlanStep } from '@scp/contracts';
 import type { AgentRegistry } from '@scp/agent-registry';
 import type { AguiEvent } from './agui/events.js';
 import { A2AError, streamMessage } from './kagent/a2a.js';
@@ -11,6 +11,14 @@ export interface RunContext {
   signal: AbortSignal;
   /** Reused across follow-ups in one Portal session so kagent keeps context. */
   contextId?: string;
+  /**
+   * The kagent task this run is answering, when the user is replying to a
+   * question. Sending it is what resumes that task instead of starting a new
+   * one - the agent keeps everything it had already worked out.
+   */
+  resumeTaskId?: string;
+  /** The plan as it stood when the task paused, so progress survives the wait. */
+  resumePlan?: PlanStep[];
 }
 
 /**
@@ -33,6 +41,8 @@ export interface AgentInvoker {
   toolsFor(runId: string): ObservedToolCall[];
   participantsFor(runId: string): string[];
   contextIdFor(runId: string): string | undefined;
+  /** The kagent task id to resume, and what was asked, when a run paused. */
+  pendingFor(runId: string): { taskId?: string; input: PendingInput; plan?: PlanStep[] } | undefined;
 }
 
 export interface A2AInvokerOptions {
@@ -47,6 +57,10 @@ export class A2AAgentInvoker implements AgentInvoker {
   private readonly tools = new Map<string, ObservedToolCall[]>();
   private readonly participants = new Map<string, string[]>();
   private readonly contexts = new Map<string, string>();
+  private readonly pending = new Map<
+    string,
+    { taskId?: string; input: PendingInput; plan?: PlanStep[] }
+  >();
 
   constructor(private readonly opts: A2AInvokerOptions) {}
 
@@ -62,6 +76,10 @@ export class A2AAgentInvoker implements AgentInvoker {
     return this.contexts.get(runId);
   }
 
+  pendingFor(runId: string): { taskId?: string; input: PendingInput; plan?: PlanStep[] } | undefined {
+    return this.pending.get(runId);
+  }
+
   async *run(
     invocation: AgentInvocation,
     ctx: RunContext,
@@ -73,6 +91,7 @@ export class A2AAgentInvoker implements AgentInvoker {
       registry: this.opts.registry,
       threadId: ctx.threadId,
       runId: ctx.runId,
+      ...(ctx.resumePlan ? { resumePlan: ctx.resumePlan } : {}),
     });
     this.tools.set(ctx.runId, mapper.observedTools);
     this.participants.set(ctx.runId, mapper.participants);
@@ -86,6 +105,7 @@ export class A2AAgentInvoker implements AgentInvoker {
         agentName: card.runtime.name,
         text: composePrompt(invocation, card),
         contextId: ctx.contextId,
+        taskId: ctx.resumeTaskId,
         messageId: invocation.request_id,
         metadata: {
           scp_trace_id: invocation.correlation.trace_id,
@@ -111,6 +131,14 @@ export class A2AAgentInvoker implements AgentInvoker {
         yield { type: 'RUN_ERROR', message, code };
         // Still finish so the Portal gets a terminal state and a result to render.
       }
+    }
+
+    if (mapper.pendingInput) {
+      this.pending.set(ctx.runId, {
+        ...(mapper.taskId ? { taskId: mapper.taskId } : {}),
+        input: mapper.pendingInput,
+        ...(mapper.currentPlan ? { plan: mapper.currentPlan } : {}),
+      });
     }
 
     yield* mapper.finish();

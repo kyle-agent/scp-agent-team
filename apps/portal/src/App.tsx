@@ -5,6 +5,7 @@ import { applyEvent, initialRunState, type RunState } from './lib/run-state';
 import { Timeline } from './components/Timeline';
 import { PlanChecklist } from './components/PlanChecklist';
 import { ResultPanel } from './components/ResultPanel';
+import { InputRequest } from './components/InputRequest';
 
 function newId(): string {
   return crypto.randomUUID();
@@ -42,13 +43,19 @@ export function App() {
   const running = state.phase === 'running';
 
   const start = useCallback(
-    async (taskText: string) => {
+    async (taskText: string, resume = false) => {
       if (!agentId || !taskText.trim() || running) return;
 
       const controller = new AbortController();
       abortRef.current = controller;
       const runId = newId();
-      setState({ ...initialRunState, phase: 'running', runId, threadId });
+      // A resumed run continues the session: keep the timeline the user is
+      // reading and let RUN_STARTED extend it rather than clear it.
+      setState((prev) =>
+        resume
+          ? { ...prev, continuation: true, phase: 'running', runId }
+          : { ...initialRunState, phase: 'running', runId, threadId },
+      );
 
       try {
         const stream = runAgent(
@@ -57,6 +64,7 @@ export function App() {
             task: taskText,
             threadId,
             runId,
+            ...(resume ? { resume: true } : {}),
             context: {
               ...(service ? { service } : {}),
               ...(environment ? { environment } : {}),
@@ -100,6 +108,8 @@ export function App() {
     },
     [start],
   );
+
+  const answerAgent = useCallback((answer: string) => void start(answer, true), [start]);
 
   // The three actions the intro deck calls for. All three continue the same
   // thread, so kagent keeps the conversation context rather than starting cold.
@@ -249,6 +259,13 @@ export function App() {
 
         <section className="panel panel--timeline" ref={timelineRef}>
           {state.error && <div className="error">{state.error}</div>}
+          {state.pendingInput && (
+            <InputRequest
+              request={state.pendingInput}
+              disabled={running}
+              onAnswer={answerAgent}
+            />
+          )}
           {state.plan && state.plan.length > 0 && <PlanChecklist steps={state.plan} />}
           <h2>Timeline</h2>
           <Timeline state={state} />
@@ -259,17 +276,23 @@ export function App() {
           {state.result ? (
             <>
               <ResultPanel result={state.result} onFollowup={onFollowup} />
-              <div className="session-actions">
-                <button type="button" className="btn" onClick={analyseFurther} disabled={running}>
-                  Analyse further
-                </button>
-                <button type="button" className="btn" onClick={otherHypotheses} disabled={running}>
-                  Other hypotheses
-                </button>
-                <button type="button" className="btn" onClick={endSession} disabled={running}>
-                  End
-                </button>
-              </div>
+              {/* A paused run is not finished, so the closing actions do not
+                  belong yet - the only useful action is answering. Rendered
+                  conditionally rather than hidden: `display: flex` in CSS beats
+                  the `hidden` attribute. */}
+              {state.phase !== 'needs_input' && (
+                <div className="session-actions">
+                  <button type="button" className="btn" onClick={analyseFurther} disabled={running}>
+                    Analyse further
+                  </button>
+                  <button type="button" className="btn" onClick={otherHypotheses} disabled={running}>
+                    Other hypotheses
+                  </button>
+                  <button type="button" className="btn" onClick={endSession} disabled={running}>
+                    End
+                  </button>
+                </div>
+              )}
             </>
           ) : (
             <div className="empty">

@@ -3,6 +3,7 @@ import type {
   AgentInvocation,
   AgentResult,
   Evidence,
+  PendingInput,
   PlanStep,
   PlanStepStatus,
   RunSharedState,
@@ -26,6 +27,7 @@ import {
   type DelegationSignal,
 } from './subagent.js';
 import { attribute } from '../agui/events.js';
+import { inputRequestFromMessage, inputRequestFromPart } from './input-request.js';
 
 export interface MapperOptions {
   invocation: AgentInvocation;
@@ -33,6 +35,13 @@ export interface MapperOptions {
   registry: AgentRegistry;
   threadId: string;
   runId: string;
+  /**
+   * The plan as it stood when this run's task paused for the user.
+   *
+   * Without it a resumed run starts blind and would report steps completed
+   * before the pause as never reached.
+   */
+  resumePlan?: PlanStep[];
 }
 
 export interface ObservedToolCall {
@@ -74,6 +83,8 @@ export class A2AToAguiMapper {
   private readonly reopenCount = new Map<string, number>();
   private finalState?: string;
   private errorMessage?: string;
+  /** Set when the agent paused for the user; read by the caller to park the run. */
+  pendingInput?: PendingInput;
 
   readonly observedTools: ObservedToolCall[] = [];
   /** Every agent that took part, in the order they first appeared. Audited. */
@@ -90,6 +101,12 @@ export class A2AToAguiMapper {
         .map((card) => card.id)
         .filter((id) => id !== opts.card.id),
     );
+    if (opts.resumePlan?.length) this.plan = opts.resumePlan.map((step) => ({ ...step }));
+  }
+
+  /** The plan as it currently stands, for a caller that must park the run. */
+  get currentPlan(): PlanStep[] | undefined {
+    return this.plan?.map((step) => ({ ...step }));
   }
 
   private get currentSubagentRunId(): string | undefined {
@@ -125,6 +142,13 @@ export class A2AToAguiMapper {
       case 'status-update': {
         this.contextId ??= result.contextId;
         this.taskId ??= result.taskId;
+        if (result.status.state === 'input-required') {
+          // The prompt text is the question, so it must not also stream into the
+          // timeline as if the agent had simply carried on talking.
+          this.pendingInput = inputRequestFromMessage(result.status.message);
+          this.finalState = result.status.state;
+          break;
+        }
         if (result.status.message) yield* this.mapMessage(result.status.message);
         if (result.status.state !== 'working' && result.status.state !== 'submitted') {
           this.finalState = result.status.state;
@@ -194,6 +218,12 @@ export class A2AToAguiMapper {
     }
     if (planSignal?.kind === 'plan-step') {
       yield* this.setStepStatus(planSignal.id, planSignal.status, planSignal.detail);
+      return;
+    }
+
+    const inputRequest = inputRequestFromPart(part);
+    if (inputRequest) {
+      this.pendingInput = inputRequest;
       return;
     }
 
@@ -374,7 +404,20 @@ export class A2AToAguiMapper {
   // --- plan -----------------------------------------------------------------
 
   private *adoptPlan(steps: PlanStep[]): Generator<AguiEvent> {
-    this.plan = steps;
+    const previous = this.plan;
+
+    // A resumed task may replay the text it already sent, re-declaring the same
+    // plan. Treating that as a new plan would wipe the progress made before the
+    // pause, so an identical plan keeps the statuses it already had.
+    this.plan =
+      previous && sameShape(previous, steps)
+        ? steps.map((step, i) => ({
+            ...step,
+            status: previous[i]!.status,
+            ...(previous[i]!.detail ? { detail: previous[i]!.detail! } : {}),
+          }))
+        : steps;
+
     yield this.stateSnapshot();
   }
 
@@ -417,6 +460,9 @@ export class A2AToAguiMapper {
    */
   private settlePlan(): void {
     if (!this.plan) return;
+    // A run paused for the user is not over, so its remaining steps stay pending
+    // rather than being written off as skipped.
+    if (this.mapStatus() === 'needs_input') return;
     const failed = this.mapStatus() === 'failed';
     for (const step of this.plan) {
       if (step.status === 'running') step.status = failed ? 'failed' : 'done';
@@ -427,6 +473,7 @@ export class A2AToAguiMapper {
   private stateSnapshot(): AguiEvent {
     const state: RunSharedState = {};
     if (this.plan) state.plan = this.plan.map((step) => ({ ...step }));
+    if (this.pendingInput) state.pendingInput = this.pendingInput;
     return { type: 'STATE_SNAPSHOT', snapshot: state };
   }
 
@@ -547,6 +594,7 @@ export class A2AToAguiMapper {
     const result = this.buildResult();
     const state: RunSharedState = { result };
     if (this.plan) state.plan = this.plan.map((step) => ({ ...step }));
+    if (this.pendingInput) state.pendingInput = this.pendingInput;
 
     yield { type: 'STEP_FINISHED', stepName: this.opts.card.name };
     yield { type: 'STATE_SNAPSHOT', snapshot: state };
@@ -580,9 +628,14 @@ export class A2AToAguiMapper {
     // Fallback for agents that answer in prose - the common case until agents are
     // taught to emit AgentResult directly. The Portal renders both identically.
     const text = this.assistantText.join('');
+    const status = this.mapStatus();
+    const summary =
+      status === 'needs_input' && this.pendingInput
+        ? this.pendingInput.prompt
+        : text.trim() || 'Agent produced no textual answer.';
     return {
-      status: this.mapStatus(),
-      summary: text.trim() || 'Agent produced no textual answer.',
+      status,
+      summary,
       findings: [],
       evidence: this.evidence,
       recommendations: [],
@@ -607,6 +660,11 @@ export class A2AToAguiMapper {
         return 'completed';
     }
   }
+}
+
+/** Same steps in the same order - i.e. a re-declaration rather than a new plan. */
+function sameShape(a: PlanStep[], b: PlanStep[]): boolean {
+  return a.length === b.length && a.every((step, i) => step.label === b[i]!.label);
 }
 
 function safeParse(text: string): unknown {

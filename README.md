@@ -17,7 +17,7 @@ see [Status](#status).
 
 | Component | Path | What it does |
 |---|---|---|
-| Portal | `apps/portal` | Vite + React. Agent catalog, task input, plan checklist, live timeline, tool activity, evidence tabs, root-cause candidates, findings, follow-ups, cancel. |
+| Portal | `apps/portal` | Vite + React. Agent catalog, task input, plan checklist, live timeline, nested multi-agent work, tool activity, evidence tabs, root-cause candidates, findings, human-in-the-loop answers, follow-ups, cancel. |
 | AG-UI Adapter | `apps/agui-adapter` | Auth, contract validation, audit, and the A2A ⇄ AG-UI event translation. No domain logic. |
 | Agent Registry | `packages/agent-registry` | Loads `agents/*/card.json`. The single source of agent definitions for every access mode. |
 | Contracts | `packages/contracts` | JSON Schemas + types for AgentCard, AgentInvocation, AgentResult, AuditRecord. |
@@ -70,7 +70,7 @@ the write-tool block, and the audit record.
 | M2 — real kagent | done (A2A); mock is a drop-in via `KAGENT_BASE_URL` |
 | M3 — AG-UI Portal | done |
 | M4 — real read-only tools (K8s/Prometheus/Knowledge MCP) | provided by your kagent backend |
-| M5 — pilot hardening (OIDC, metrics, rate limits) | partial: bearer auth, audit, timeouts, cancellation |
+| M5 — pilot hardening (OIDC, metrics, rate limits) | partial: bearer auth, audit, timeouts, cancellation, human-in-the-loop |
 | M6+ — n8n, Argo, A2A | design only, see `optional/` and `docs/protocol-evolution.md` |
 
 ## Documentation

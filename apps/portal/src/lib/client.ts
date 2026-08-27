@@ -27,6 +27,13 @@ export interface RunRequest {
   context?: Record<string, string>;
   constraints?: string[];
   artifacts?: { name: string; media_type?: string; content: string }[];
+  /**
+   * Answers a question the agent paused on, resuming its kagent task.
+   *
+   * The adapter holds the task id server-side, so the browser only has to say
+   * which thread it is answering.
+   */
+  resume?: boolean;
 }
 
 /**

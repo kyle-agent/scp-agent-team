@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import express from 'express';
-import { defaultFixture, fixtures, type ScriptStep } from './fixtures.js';
+import { defaultFixture, fixtures, hitlFixtures, type Fixture, type ScriptStep } from './fixtures.js';
 
 /**
  * Mock kagent A2A endpoint.
@@ -31,6 +31,14 @@ app.get('/api/a2a/:namespace/:agent/.well-known/agent.json', (req, res) => {
   });
 });
 
+/**
+ * Tasks paused in `input-required`, with the steps still to run.
+ *
+ * A real kagent keeps this in the task itself; the mock only has to remember
+ * where it stopped so a resume can pick up from there.
+ */
+const parkedTasks = new Map<string, { fixture: Fixture; remaining: ScriptStep[]; cumulative: string }>();
+
 app.post('/api/a2a/:namespace/:agent/', async (req, res) => {
   const rpcId = req.body?.id ?? null;
   const method = req.body?.method;
@@ -44,9 +52,33 @@ app.post('/api/a2a/:namespace/:agent/', async (req, res) => {
     return;
   }
 
-  const fixture = fixtures[req.params.agent] ?? defaultFixture;
-  const taskId = randomUUID();
-  const contextId = req.body?.params?.message?.contextId ?? randomUUID();
+  const inbound = req.body?.params?.message;
+  const askedText: string = (inbound?.parts ?? [])
+    .filter((p: { kind?: string }) => p?.kind === 'text')
+    .map((p: { text?: string }) => p.text ?? '')
+    .join(' ');
+
+  // A message carrying a taskId is an answer to a question, not a new task.
+  const resumeTaskId: string | undefined = inbound?.taskId;
+  const parked = resumeTaskId ? parkedTasks.get(resumeTaskId) : undefined;
+  if (resumeTaskId && !parked) {
+    res.status(404).json({
+      jsonrpc: '2.0',
+      id: rpcId,
+      error: { code: -32001, message: `no task ${resumeTaskId} is awaiting input` },
+    });
+    return;
+  }
+  if (resumeTaskId) parkedTasks.delete(resumeTaskId);
+
+  const fixture =
+    parked?.fixture ??
+    hitlFixtures.find((f) => f.agent === req.params.agent && f.match.test(askedText))?.fixture ??
+    fixtures[req.params.agent] ??
+    defaultFixture;
+
+  const taskId = resumeTaskId ?? randomUUID();
+  const contextId = inbound?.contextId ?? randomUUID();
   const messageId = `mock-msg-${taskId}`;
 
   res.writeHead(200, {
@@ -96,11 +128,32 @@ app.post('/api/a2a/:namespace/:agent/', async (req, res) => {
 
   // Text is streamed cumulatively on purpose: it is the harder of the two
   // real-world behaviours, and proves the adapter de-duplicates correctly.
+  // A resumed task continues rather than replaying: the adapter has already
+  // shown everything said before the pause.
   let cumulative = '';
+  let paused = false;
 
   const runSteps = async (steps: ScriptStep[]): Promise<void> => {
-    for (const step of steps) {
-      if (cancelled) return;
+    for (const [index, step] of steps.entries()) {
+      if (cancelled || paused) return;
+
+      if (step.askUser) {
+        // Park the rest of the script and stop the stream. Nothing after this
+        // runs until an answer arrives on this same task.
+        parkedTasks.set(taskId, {
+          fixture,
+          remaining: steps.slice(index + 1),
+          cumulative,
+        });
+        paused = true;
+        statusUpdate(
+          'input-required',
+          [{ kind: 'data', data: { kind: 'input-request', ...step.askUser } }],
+          true,
+        );
+        return;
+      }
+
       await sleep(step.delayMs ?? 150);
 
       if (step.planText) {
@@ -194,7 +247,12 @@ app.post('/api/a2a/:namespace/:agent/', async (req, res) => {
     }
   };
 
-  await runSteps(fixture.steps);
+  await runSteps(parked?.remaining ?? fixture.steps);
+
+  if (paused) {
+    res.end();
+    return;
+  }
 
   if (cancelled) {
     res.end();

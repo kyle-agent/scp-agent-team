@@ -2,7 +2,7 @@ import { createRequire } from 'node:module';
 import type { ValidateFunction } from 'ajv';
 import type { Ajv2020 } from 'ajv/dist/2020.js';
 import type { FormatsPlugin } from 'ajv-formats';
-import type { AgentCard, AgentInvocation, AgentResult, PlanStep } from './types.js';
+import type { AgentCard, AgentInvocation, AgentResult, PendingInput, PlanStep } from './types.js';
 
 // The schemas declare JSON Schema 2020-12, so ajv must be loaded from its
 // 2020 dialect entry - the default entry only knows draft-07.
@@ -16,6 +16,7 @@ const agentCardSchema = require('../schemas/agent-card.schema.json');
 const agentInvocationSchema = require('../schemas/agent-invocation.schema.json');
 const agentResultSchema = require('../schemas/agent-result.schema.json');
 const runPlanSchema = require('../schemas/run-plan.schema.json');
+const pendingInputSchema = require('../schemas/pending-input.schema.json');
 
 const ajv = new Ajv({ allErrors: true, strict: false });
 addFormats(ajv);
@@ -25,6 +26,7 @@ const validators = {
   agentInvocation: ajv.compile<AgentInvocation>(agentInvocationSchema),
   agentResult: ajv.compile<AgentResult>(agentResultSchema),
   runPlan: ajv.compile<PlanStep[]>(runPlanSchema),
+  pendingInput: ajv.compile<PendingInput>(pendingInputSchema),
 };
 
 export class ContractError extends Error {
@@ -65,6 +67,13 @@ export function assertAgentResult(v: unknown): asserts v is AgentResult {
 
 export function assertRunPlan(v: unknown): asserts v is PlanStep[] {
   assertWith<PlanStep[]>(validators.runPlan, 'RunPlan', v);
+}
+
+/** Non-throwing: a malformed request degrades to a plain question, never a dead run. */
+export function checkPendingInput(v: unknown): { ok: true } | { ok: false; errors: string[] } {
+  return validators.pendingInput(v)
+    ? { ok: true }
+    : { ok: false, errors: explain(validators.pendingInput) };
 }
 
 /** Non-throwing variant, so a malformed plan degrades to no plan instead of killing the run. */

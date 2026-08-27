@@ -117,6 +117,26 @@ export interface PlanStep {
   detail?: string;
 }
 
+export interface PendingInputOption {
+  value: string;
+  label: string;
+  detail?: string;
+  risk?: RiskLevel;
+}
+
+/**
+ * What an agent is waiting for before it can continue.
+ *
+ * This is the human-in-the-loop pause: the run stops, the Portal asks, and the
+ * answer resumes the same kagent task rather than starting a new one.
+ */
+export interface PendingInput {
+  prompt: string;
+  options?: PendingInputOption[];
+  allow_free_text?: boolean;
+  capability?: Record<string, unknown>;
+}
+
 /**
  * AG-UI shared state for one run, carried by STATE_SNAPSHOT.
  *
@@ -127,6 +147,8 @@ export interface PlanStep {
 export interface RunSharedState {
   plan?: PlanStep[];
   result?: AgentResult;
+  /** Set when the run paused for the user. Cleared once it resumes. */
+  pendingInput?: PendingInput;
 }
 
 /** Audit record written for every invocation, in both access modes (SPEC §18). */

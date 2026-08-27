@@ -15,6 +15,13 @@ export interface ScriptStep {
   planStep?: { id: string; status: string; detail?: string };
   /** Emitted as a tool call, then its result. */
   tool?: { name: string; args: Record<string, unknown>; result: unknown };
+  /**
+   * Hands the floor to another agent, runs its steps, then hands it back.
+   *
+   * Emitted as a `transfer_to_agent` call and its matching result, which is how
+   * a delegating agent looks on the wire.
+   */
+  delegate?: { agent: string; task: string; steps: ScriptStep[]; result: unknown };
   delayMs?: number;
 }
 
@@ -195,13 +202,46 @@ export const fixtures: Record<string, Fixture> = {
         delayMs: 250,
       },
       {
-        // The agent decides the last step is unnecessary. Reporting that keeps
-        // the checklist honest instead of leaving a step hanging.
-        planStep: {
-          id: 'step-4',
-          status: 'skipped',
-          detail: 'Root cause identified at the database tier; a network check would not change it.',
+        // Delegation: the Kubernetes Agent cannot see the service mesh, so it
+        // hands that step to a specialist and reports what came back.
+        delegate: {
+          agent: 'network_diagnostics',
+          task: 'Confirm the checkout pods can reach the database, and report added latency on the path.',
+          steps: [
+            { text: 'Tracing the path from checkout to the database.\n\n', delayMs: 150 },
+            {
+              tool: {
+                name: 'kubernetes_read',
+                args: { verb: 'get', resource: 'networkpolicy', namespace: 'checkout' },
+                result: { policies: ['allow-db-egress'], blocked: false },
+              },
+              delayMs: 250,
+            },
+            {
+              tool: {
+                name: 'prometheus_query',
+                args: { query: 'histogram_quantile(0.95, rate(envoy_tcp_connect_ms_bucket{app="checkout"}[5m]))' },
+                result: { value: 3.1, unit: 'ms', note: 'nominal' },
+              },
+              delayMs: 300,
+            },
+            {
+              text: 'Network path is clean: policy permits egress and connect latency is 3.1ms.\n',
+              delayMs: 200,
+            },
+          ],
+          result: {
+            verdict: 'network_healthy',
+            connect_p95_ms: 3.1,
+            note: 'No policy blocks; latency is not introduced on the network path.',
+          },
         },
+      },
+      {
+        text:
+          'The Network Diagnostics agent ruled out the network path, which leaves the ' +
+          'connection pool as the sole explanation.\n',
+        delayMs: 200,
       },
     ],
     result: {

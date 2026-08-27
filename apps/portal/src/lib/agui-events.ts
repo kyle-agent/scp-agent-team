@@ -1,7 +1,12 @@
 import type { AgentResult, RunSharedState } from '@scp/contracts';
 
-/** Mirrors the adapter's emitted AG-UI event set (apps/agui-adapter/src/agui/events.ts). */
-export type AguiEvent =
+/**
+ * Mirrors the adapter's emitted AG-UI event set (apps/agui-adapter/src/agui/events.ts).
+ *
+ * `subagentRunId` may appear on any of these except the run-level ones: it says
+ * which participant produced the event when several agents collaborate.
+ */
+export type AguiEvent = { subagentRunId?: string } & (
   | { type: 'RUN_STARTED'; threadId: string; runId: string; timestamp?: number }
   | { type: 'RUN_FINISHED'; threadId: string; runId: string; result?: AgentResult; timestamp?: number }
   | { type: 'RUN_ERROR'; message: string; code?: string; timestamp?: number }
@@ -15,4 +20,15 @@ export type AguiEvent =
   | { type: 'TOOL_CALL_END'; toolCallId: string; timestamp?: number }
   | { type: 'TOOL_CALL_RESULT'; messageId: string; toolCallId: string; content: string; role?: 'tool'; timestamp?: number }
   | { type: 'STATE_SNAPSHOT'; snapshot: RunSharedState; timestamp?: number }
-  | { type: 'CUSTOM'; name: string; value: unknown; timestamp?: number };
+  | {
+      type: 'SUBAGENT_STARTED';
+      subagentRunId: string;
+      name: string;
+      description?: string;
+      parentSubagentRunId?: string;
+      parentToolCallId?: string;
+      timestamp?: number;
+    }
+  | { type: 'SUBAGENT_FINISHED'; subagentRunId: string; result?: unknown; timestamp?: number }
+  | { type: 'SUBAGENT_ERROR'; subagentRunId: string; message: string; code?: string; timestamp?: number }
+  | { type: 'CUSTOM'; name: string; value: unknown; timestamp?: number });

@@ -13,13 +13,30 @@ export function Timeline({ state }: { state: RunState }) {
   }
 
   return (
-    <ol className="timeline">
-      {state.timeline.map((item) => (
-        <li key={item.id} className={`timeline__item timeline__item--${item.kind}`}>
-          <Row item={item} />
-        </li>
-      ))}
-    </ol>
+    <>
+      {state.participants.length > 0 && (
+        <div className="participants">
+          <span className="muted">Collaborating:</span>
+          {state.participants.map((name) => (
+            <code key={name}>{name}</code>
+          ))}
+        </div>
+      )}
+      <ol className="timeline">
+        {state.timeline.map((item) => (
+          <li
+            key={item.id}
+            className={`timeline__item timeline__item--${item.kind}`}
+            // Indentation is the nesting: everything a delegated agent did sits
+            // under the delegation, not alongside the caller's own work.
+            style={item.depth > 0 ? { marginLeft: `${item.depth * 18}px` } : undefined}
+            data-nested={item.depth > 0 ? 'true' : undefined}
+          >
+            <Row item={item} />
+          </li>
+        ))}
+      </ol>
+    </>
   );
 }
 
@@ -67,6 +84,22 @@ function Row({ item }: { item: TimelineItem }) {
             </div>
           )}
         </details>
+      );
+
+    case 'subagent':
+      return (
+        <div className="subagent">
+          <StatusDot status={item.status === 'running' ? 'running' : 'done'} />
+          <span className="subagent__name">{item.name}</span>
+          <span className="muted">
+            {item.status === 'running'
+              ? 'working…'
+              : item.status === 'failed'
+                ? (item.error ?? 'failed')
+                : 'handed back'}
+          </span>
+          {item.description && <span className="subagent__task">{item.description}</span>}
+        </div>
       );
 
     case 'custom':

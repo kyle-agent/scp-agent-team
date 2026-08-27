@@ -154,9 +154,14 @@ app.post('/agui/run', async (req, res) => {
         auth.accessMode,
         started,
         status,
-        invoker.toolsFor(runId).map((t) => ({ tool_call_id: t.tool_call_id, name: t.name })),
+        invoker.toolsFor(runId).map((t) => ({
+          tool_call_id: t.tool_call_id,
+          name: t.name,
+          ...(t.subagent ? { subagent: t.subagent } : {}),
+        })),
         error,
         runId,
+        invoker.participantsFor(runId),
       ),
     );
     if (!res.writableEnded) res.end();
@@ -171,6 +176,7 @@ function auditRecord(
   tools: AuditRecord['tools'],
   error?: string,
   runId?: string,
+  participants: string[] = [],
 ): AuditRecord {
   return {
     ts: new Date().toISOString(),
@@ -182,6 +188,7 @@ function auditRecord(
     client: invocation.actor.client,
     agent: invocation.agent,
     agent_run_id: runId,
+    ...(participants.length > 0 ? { participants } : {}),
     tools,
     duration_ms: Date.now() - started,
     status,

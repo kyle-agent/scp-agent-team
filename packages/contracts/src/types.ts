@@ -140,7 +140,9 @@ export interface AuditRecord {
   client?: string;
   agent: string;
   agent_run_id?: string;
-  tools: { tool_call_id: string; name: string }[];
+  /** Every agent that took part, when the run involved more than the one invoked. */
+  participants?: string[];
+  tools: { tool_call_id: string; name: string; subagent?: string }[];
   duration_ms: number;
   status: string;
   error?: string;

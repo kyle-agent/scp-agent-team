@@ -52,6 +52,7 @@ async function waitForHealth(url: string, timeoutMs = 30_000): Promise<void> {
 
 interface AguiEvent {
   type: string;
+  subagentRunId?: string;
   [k: string]: unknown;
 }
 
@@ -202,7 +203,15 @@ describe('AG-UI Portal access (Mode 2)', () => {
       const results = events.filter((e) => e.type === 'TOOL_CALL_RESULT');
       assert.deepEqual(
         starts.map((e) => e.toolCallName),
-        ['kubernetes_read', 'kubernetes_read', 'prometheus_query', 'prometheus_query'],
+        [
+          'kubernetes_read',
+          'kubernetes_read',
+          'prometheus_query',
+          'prometheus_query',
+          // The last two belong to the delegated specialist.
+          'kubernetes_read',
+          'prometheus_query',
+        ],
       );
       assert.equal(results.length, starts.length, 'each tool call must produce a result');
       assert.ok(
@@ -271,10 +280,52 @@ describe('AG-UI Portal access (Mode 2)', () => {
       );
       assert.deepEqual(
         final.map((s) => s.status),
-        ['done', 'done', 'done', 'skipped'],
-        'three steps ran; the agent explicitly skipped the network check',
+        ['done', 'done', 'done', 'done'],
+        'the network step was carried out by a delegated specialist',
       );
-      assert.ok(final.at(-1)?.detail, 'a skipped step should say why');
+    });
+
+    test('a delegation is reported as another agent, not as a tool call', () => {
+      const started = events.filter((e) => e.type === 'SUBAGENT_STARTED');
+      assert.equal(started.length, 1, 'expected exactly one delegation');
+      assert.equal(started[0]!.name, 'network_diagnostics');
+      assert.ok(started[0]!.description, 'the handoff should say what was asked');
+      assert.ok(
+        !events.some(
+          (e) => e.type === 'TOOL_CALL_START' && e.toolCallName === 'transfer_to_agent',
+        ),
+        'the transfer itself must not surface as a tool row',
+      );
+    });
+
+    test("the specialist's own work is attributed to it", () => {
+      const subRunId = (events.find((e) => e.type === 'SUBAGENT_STARTED') as { subagentRunId: string })
+        .subagentRunId;
+      const its = events.filter((e) => e.subagentRunId === subRunId);
+
+      assert.ok(
+        its.some((e) => e.type === 'TOOL_CALL_START'),
+        'the specialist ran its own tools',
+      );
+      assert.ok(
+        its.some((e) => e.type === 'TEXT_MESSAGE_CONTENT'),
+        'the specialist reported in its own voice',
+      );
+
+      // Work before the handoff must not be mis-attributed to the specialist.
+      const firstTool = events.find((e) => e.type === 'TOOL_CALL_START')!;
+      assert.equal(firstTool.subagentRunId, undefined);
+    });
+
+    test('the floor is handed back before the run ends', () => {
+      const finished = events.filter((e) => e.type === 'SUBAGENT_FINISHED');
+      assert.equal(finished.length, 1, 'the specialist must hand back');
+      assert.ok(
+        events.indexOf(finished[0]!) < events.findIndex((e) => e.type === 'RUN_FINISHED'),
+        'a run must not end with an agent still working',
+      );
+      const last = events.at(-1)!;
+      assert.equal(last.subagentRunId, undefined, 'the run belongs to no single participant');
     });
 
     test('the plan markup never reaches the displayed answer', () => {
@@ -391,7 +442,7 @@ describe('AG-UI Portal access (Mode 2)', () => {
       assert.ok(run.duration_ms > 0);
       assert.deepEqual(
         run.tools.map((t) => t.name),
-        ['kubernetes_read', 'kubernetes_read', 'prometheus_query', 'prometheus_query'],
+        ['kubernetes_read', 'kubernetes_read', 'prometheus_query', 'prometheus_query', 'kubernetes_read', 'prometheus_query'],
         'audited tool calls must match what ran',
       );
 

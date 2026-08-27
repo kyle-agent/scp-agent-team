@@ -31,6 +31,7 @@ export interface AgentInvoker {
   ): AsyncGenerator<AguiEvent, AgentResult>;
   /** Populated as the run proceeds; read after draining, for audit. */
   toolsFor(runId: string): ObservedToolCall[];
+  participantsFor(runId: string): string[];
   contextIdFor(runId: string): string | undefined;
 }
 
@@ -44,12 +45,17 @@ export interface A2AInvokerOptions {
 export class A2AAgentInvoker implements AgentInvoker {
   readonly kind = 'kagent-a2a';
   private readonly tools = new Map<string, ObservedToolCall[]>();
+  private readonly participants = new Map<string, string[]>();
   private readonly contexts = new Map<string, string>();
 
   constructor(private readonly opts: A2AInvokerOptions) {}
 
   toolsFor(runId: string): ObservedToolCall[] {
     return this.tools.get(runId) ?? [];
+  }
+
+  participantsFor(runId: string): string[] {
+    return this.participants.get(runId) ?? [];
   }
 
   contextIdFor(runId: string): string | undefined {
@@ -69,6 +75,7 @@ export class A2AAgentInvoker implements AgentInvoker {
       runId: ctx.runId,
     });
     this.tools.set(ctx.runId, mapper.observedTools);
+    this.participants.set(ctx.runId, mapper.participants);
 
     yield mapper.runStarted();
 

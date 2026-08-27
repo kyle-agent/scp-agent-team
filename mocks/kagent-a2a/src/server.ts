@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import express from 'express';
-import { defaultFixture, fixtures } from './fixtures.js';
+import { defaultFixture, fixtures, type ScriptStep } from './fixtures.js';
 
 /**
  * Mock kagent A2A endpoint.
@@ -98,66 +98,103 @@ app.post('/api/a2a/:namespace/:agent/', async (req, res) => {
   // real-world behaviours, and proves the adapter de-duplicates correctly.
   let cumulative = '';
 
-  for (const step of fixture.steps) {
-    if (cancelled) break;
-    await sleep(step.delayMs ?? 150);
+  const runSteps = async (steps: ScriptStep[]): Promise<void> => {
+    for (const step of steps) {
+      if (cancelled) return;
+      await sleep(step.delayMs ?? 150);
 
-    if (step.planText) {
-      // Character-level chunks on purpose: the `[PLAN]` markers end up split
-      // across updates, which is what the adapter's filter has to survive.
-      for (const chunk of chunkChars(step.planText, 3)) {
-        if (cancelled) break;
-        cumulative += chunk;
-        statusUpdate('working', [{ kind: 'text', text: cumulative }]);
-        await sleep(8);
+      if (step.planText) {
+        // Character-level chunks on purpose: the `[PLAN]` markers end up split
+        // across updates, which is what the adapter's filter has to survive.
+        for (const chunk of chunkChars(step.planText, 3)) {
+          if (cancelled) return;
+          cumulative += chunk;
+          statusUpdate('working', [{ kind: 'text', text: cumulative }]);
+          await sleep(8);
+        }
+      }
+
+      if (step.planData && !cancelled) {
+        statusUpdate('working', [{ kind: 'data', data: { kind: 'plan', plan: step.planData } }]);
+        await sleep(80);
+      }
+
+      if (step.planStep && !cancelled) {
+        statusUpdate('working', [{ kind: 'data', data: { kind: 'plan-step', ...step.planStep } }]);
+        await sleep(80);
+      }
+
+      if (step.text) {
+        for (const chunk of chunkText(step.text)) {
+          if (cancelled) return;
+          cumulative += chunk;
+          statusUpdate('working', [{ kind: 'text', text: cumulative }]);
+          await sleep(25);
+        }
+      }
+
+      if (step.tool && !cancelled) {
+        const callId = nextCallId(step.tool.name);
+        statusUpdate('working', [
+          {
+            kind: 'data',
+            data: {
+              kind: 'tool-call',
+              tool_call_id: callId,
+              name: step.tool.name,
+              args: step.tool.args,
+            },
+          },
+        ]);
+        await sleep(step.delayMs ?? 200);
+        statusUpdate('working', [
+          {
+            kind: 'data',
+            data: {
+              kind: 'tool-result',
+              tool_call_id: callId,
+              name: step.tool.name,
+              result: step.tool.result,
+            },
+          },
+        ]);
+      }
+
+      if (step.delegate && !cancelled) {
+        // A delegation on the wire is a transfer tool call whose result arrives
+        // once the other agent is done. Its own work streams in between.
+        const callId = nextCallId('transfer_to_agent');
+        statusUpdate('working', [
+          {
+            kind: 'data',
+            data: {
+              kind: 'tool-call',
+              tool_call_id: callId,
+              name: 'transfer_to_agent',
+              args: { agent_name: step.delegate.agent, task: step.delegate.task },
+            },
+          },
+        ]);
+
+        await runSteps(step.delegate.steps);
+        if (cancelled) return;
+
+        statusUpdate('working', [
+          {
+            kind: 'data',
+            data: {
+              kind: 'tool-result',
+              tool_call_id: callId,
+              name: 'transfer_to_agent',
+              result: step.delegate.result,
+            },
+          },
+        ]);
       }
     }
+  };
 
-    if (step.planData && !cancelled) {
-      statusUpdate('working', [{ kind: 'data', data: { kind: 'plan', plan: step.planData } }]);
-      await sleep(80);
-    }
-
-    if (step.planStep && !cancelled) {
-      statusUpdate('working', [{ kind: 'data', data: { kind: 'plan-step', ...step.planStep } }]);
-      await sleep(80);
-    }
-
-    if (step.text) {
-      for (const chunk of chunkText(step.text)) {
-        if (cancelled) break;
-        cumulative += chunk;
-        statusUpdate('working', [{ kind: 'text', text: cumulative }]);
-        await sleep(25);
-      }
-    }
-
-    if (step.tool && !cancelled) {
-      statusUpdate('working', [
-        {
-          kind: 'data',
-          data: {
-            kind: 'tool-call',
-            tool_call_id: `call-${step.tool.name}-${fixture.steps.indexOf(step)}`,
-            name: step.tool.name,
-            args: step.tool.args,
-          },
-        },
-      ]);
-      await sleep(step.delayMs ?? 200);
-      statusUpdate('working', [
-        {
-          kind: 'data',
-          data: {
-            kind: 'tool-result',
-            tool_call_id: `call-${step.tool.name}-${fixture.steps.indexOf(step)}`,
-            name: step.tool.name,
-            result: step.tool.result,
-          },
-        },
-      ]);
-    }
-  }
+  await runSteps(fixture.steps);
 
   if (cancelled) {
     res.end();
@@ -179,6 +216,11 @@ app.post('/api/a2a/:namespace/:agent/', async (req, res) => {
   statusUpdate('completed', undefined, true);
   res.end();
 });
+
+let callSequence = 0;
+function nextCallId(name: string): string {
+  return `call-${name}-${++callSequence}`;
+}
 
 function chunkText(text: string): string[] {
   return text.match(/\S+\s*/g) ?? [text];

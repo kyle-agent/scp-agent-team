@@ -131,6 +131,53 @@ settles every step. There is a test for exactly this.
 If the agent declares no plan, there is no plan state and the Portal shows the
 reactive timeline alone — no degradation elsewhere.
 
+## Multiple agents
+
+When an agent hands work to another agent, that has to read as *another agent
+working*, not as a tool call. AG-UI models this with `SUBAGENT_STARTED` /
+`SUBAGENT_FINISHED` / `SUBAGENT_ERROR`, plus a `subagentRunId` that attributes
+every other event to the participant that produced it.
+
+### Recognising a handoff
+
+Same problem as tool activity: A2A has no normative shape for it. Three signals
+are recognised, in `subagent.ts`:
+
+| Signal | Where it comes from |
+|---|---|
+| `transfer_to_agent` (and similar) with the target in its arguments | ADK-style handoff |
+| a tool call whose *name* is a shared agent id | a supervisor calling its specialists |
+| `metadata.author` on a message naming a different agent | sub-agents invoked internally, with no visible tool call |
+
+A transfer with no named target stays an ordinary tool row — inventing an agent
+name would be worse than showing the raw call.
+
+### What the adapter guarantees
+
+- The handoff itself never appears as a tool row. `transfer_to_agent` becoming a
+  visible tool would reduce "the Network agent investigated" to "a tool ran".
+- Everything a specialist produces carries its `subagentRunId`, so the Portal can
+  nest it. Work before the handoff is never attributed to it.
+- Nested delegation unwinds in order, matched on the originating tool call. An
+  out-of-order end closes the inner agents too, so none are stranded.
+- A run never ends with an agent holding the floor. If the run failed while a
+  specialist was working, that specialist gets `SUBAGENT_ERROR`, not a clean
+  hand-back.
+- A specialist's tool calls go through the same read-only policy. Delegating is
+  not a way around it.
+- `participants` is recorded in the audit line, and each audited tool call names
+  the agent that ran it.
+
+A single-agent run carries no attribution at all, so nothing changes for the
+common case.
+
+### One thing to watch
+
+kagent may stream an entire run under a single A2A `messageId`. A handoff closes
+that message, and the caller's next line reopens it — so the adapter allocates a
+fresh AG-UI message id (`<id>#2`) rather than restarting an ended message, which
+AG-UI does not allow.
+
 ## Tool policy
 
 `AgentRegistry.assertToolAllowed` runs on every observed tool call. It rejects

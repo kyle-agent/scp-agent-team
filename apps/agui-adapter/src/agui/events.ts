@@ -19,6 +19,9 @@ export const EventType = {
   TOOL_CALL_END: 'TOOL_CALL_END',
   TOOL_CALL_RESULT: 'TOOL_CALL_RESULT',
   STATE_SNAPSHOT: 'STATE_SNAPSHOT',
+  SUBAGENT_STARTED: 'SUBAGENT_STARTED',
+  SUBAGENT_FINISHED: 'SUBAGENT_FINISHED',
+  SUBAGENT_ERROR: 'SUBAGENT_ERROR',
   CUSTOM: 'CUSTOM',
 } as const;
 
@@ -27,6 +30,13 @@ export type EventTypeName = (typeof EventType)[keyof typeof EventType];
 interface Base {
   type: EventTypeName;
   timestamp?: number;
+  /**
+   * Which sub-agent produced this event.
+   *
+   * Absent means the agent the user invoked. Run-level events never carry it -
+   * a run belongs to the whole collaboration, not to one participant.
+   */
+  subagentRunId?: string;
 }
 
 export type AguiEvent =
@@ -54,7 +64,34 @@ export type AguiEvent =
       role?: 'tool';
     })
   | (Base & { type: 'STATE_SNAPSHOT'; snapshot: unknown })
+  | (Base & {
+      type: 'SUBAGENT_STARTED';
+      subagentRunId: string;
+      name: string;
+      description?: string;
+      parentSubagentRunId?: string;
+      parentToolCallId?: string;
+      parentMessageId?: string;
+    })
+  | (Base & { type: 'SUBAGENT_FINISHED'; subagentRunId: string; result?: unknown; outcome?: string })
+  | (Base & { type: 'SUBAGENT_ERROR'; subagentRunId: string; message: string; code?: string })
   | (Base & { type: 'CUSTOM'; name: string; value: unknown });
+
+/** Events that describe the run as a whole, so they are never attributed to one participant. */
+const UNATTRIBUTED: ReadonlySet<string> = new Set([
+  'RUN_STARTED',
+  'RUN_FINISHED',
+  'RUN_ERROR',
+  'SUBAGENT_STARTED',
+  'SUBAGENT_FINISHED',
+  'SUBAGENT_ERROR',
+]);
+
+/** Tags an event with the sub-agent that produced it, where that is meaningful. */
+export function attribute(event: AguiEvent, subagentRunId?: string): AguiEvent {
+  if (!subagentRunId || UNATTRIBUTED.has(event.type) || event.subagentRunId) return event;
+  return { ...event, subagentRunId };
+}
 
 export function stamp(event: AguiEvent): AguiEvent {
   return { ...event, timestamp: event.timestamp ?? Date.now() };

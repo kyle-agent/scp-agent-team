@@ -144,3 +144,94 @@ describe('plan in shared state', () => {
     assert.equal(next.plan, undefined);
   });
 });
+
+describe('multi-agent collaboration', () => {
+  const sub: AguiEvent = {
+    type: 'SUBAGENT_STARTED',
+    subagentRunId: 'sub-1',
+    name: 'network_agent',
+    description: 'check the path',
+  };
+
+  test("a delegated agent's work is nested under the delegation", () => {
+    const state = reduce([
+      started,
+      { type: 'TOOL_CALL_START', toolCallId: 'top', toolCallName: 'kubernetes_read' },
+      sub,
+      { type: 'TOOL_CALL_START', toolCallId: 'inner', toolCallName: 'prometheus_query', subagentRunId: 'sub-1' },
+    ]);
+    assert.deepEqual(
+      state.timeline.map((i) => [i.kind, i.depth]),
+      [['tool', 0], ['subagent', 0], ['tool', 1]],
+    );
+  });
+
+  test('work after the handoff returns to the caller depth', () => {
+    const state = reduce([
+      started,
+      sub,
+      { type: 'TOOL_CALL_START', toolCallId: 'inner', toolCallName: 'prometheus_query' },
+      { type: 'SUBAGENT_FINISHED', subagentRunId: 'sub-1' },
+      { type: 'TEXT_MESSAGE_START', messageId: 'm', role: 'assistant' },
+    ]);
+    assert.equal(state.timeline.at(-1)?.depth, 0);
+    assert.deepEqual(state.activeSubagents, []);
+  });
+
+  test('nested delegations indent further', () => {
+    const state = reduce([
+      started,
+      sub,
+      { type: 'SUBAGENT_STARTED', subagentRunId: 'sub-2', name: 'storage_agent', parentSubagentRunId: 'sub-1' },
+      { type: 'TOOL_CALL_START', toolCallId: 'deep', toolCallName: 'kubernetes_read' },
+    ]);
+    assert.equal(state.timeline.at(-1)?.depth, 2);
+  });
+
+  test('participants are collected in first-seen order, without duplicates', () => {
+    const state = reduce([
+      started,
+      sub,
+      { type: 'SUBAGENT_FINISHED', subagentRunId: 'sub-1' },
+      { type: 'SUBAGENT_STARTED', subagentRunId: 'sub-2', name: 'storage_agent' },
+      { type: 'SUBAGENT_FINISHED', subagentRunId: 'sub-2' },
+      { type: 'SUBAGENT_STARTED', subagentRunId: 'sub-3', name: 'network_agent' },
+    ]);
+    assert.deepEqual(state.participants, ['network_agent', 'storage_agent']);
+  });
+
+  test('a sub-agent error is shown on the delegation, not swallowed', () => {
+    const state = reduce([
+      started,
+      sub,
+      { type: 'SUBAGENT_ERROR', subagentRunId: 'sub-1', message: 'network_agent timed out' },
+    ]);
+    const item = state.timeline.find((i) => i.kind === 'subagent')!;
+    assert.equal(item.kind === 'subagent' && item.status, 'failed');
+    assert.equal(item.kind === 'subagent' && item.error, 'network_agent timed out');
+    assert.deepEqual(state.activeSubagents, []);
+  });
+
+  test('a finished run leaves no agent looking busy', () => {
+    const state = reduce([
+      started,
+      sub,
+      {
+        type: 'RUN_FINISHED',
+        threadId: 't',
+        runId: 'r',
+        result: { status: 'completed', summary: 's', trace: { trace_id: 't', agent_run_id: 'r' } },
+      },
+    ]);
+    const item = state.timeline.find((i) => i.kind === 'subagent')!;
+    assert.equal(item.kind === 'subagent' && item.status, 'done');
+    assert.deepEqual(state.activeSubagents, []);
+  });
+
+  test('a new run clears the participants', () => {
+    const state = reduce([started, sub]);
+    const next = applyEvent(state, { type: 'RUN_STARTED', threadId: 't', runId: 'r2' });
+    assert.deepEqual(next.participants, []);
+    assert.deepEqual(next.activeSubagents, []);
+  });
+});

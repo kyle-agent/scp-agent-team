@@ -3,30 +3,40 @@ import type { AguiEvent } from './agui-events';
 
 export type Phase = 'idle' | 'running' | 'completed' | 'failed' | 'cancelled';
 
-export interface StepItem {
-  kind: 'step';
+interface ItemBase {
   id: string;
-  name: string;
-  status: 'running' | 'done';
   at: number;
+  /** Nesting level: 0 is the agent the user invoked, deeper is a delegation. */
+  depth: number;
 }
 
-export interface ToolItem {
+export interface StepItem extends ItemBase {
+  kind: 'step';
+  name: string;
+  status: 'running' | 'done';
+}
+
+export interface ToolItem extends ItemBase {
   kind: 'tool';
-  id: string;
   name: string;
   args?: string;
   result?: string;
   status: 'running' | 'done';
-  at: number;
 }
 
-export interface MessageItem {
+export interface MessageItem extends ItemBase {
   kind: 'message';
-  id: string;
   text: string;
   status: 'streaming' | 'done';
-  at: number;
+}
+
+/** A delegation to another agent. Everything under it is that agent's work. */
+export interface SubagentItem extends ItemBase {
+  kind: 'subagent';
+  name: string;
+  description?: string;
+  status: 'running' | 'done' | 'failed';
+  error?: string;
 }
 
 /**
@@ -36,15 +46,18 @@ export interface MessageItem {
  * named `a2ui` and become a CustomItem, which the UIBlock registry renders with
  * a real renderer instead of the JSON fallback. See docs/access-mode-agui.md.
  */
-export interface CustomItem {
+export interface CustomItem extends ItemBase {
   kind: 'custom';
-  id: string;
   name: string;
   value: unknown;
-  at: number;
 }
 
-export type TimelineItem = StepItem | ToolItem | MessageItem | CustomItem;
+export type TimelineItem =
+  | StepItem
+  | ToolItem
+  | MessageItem
+  | SubagentItem
+  | CustomItem;
 
 export interface RunState {
   phase: Phase;
@@ -58,6 +71,10 @@ export interface RunState {
    */
   plan?: PlanStep[];
   timeline: TimelineItem[];
+  /** Sub-agent runs currently holding the floor, outermost first. */
+  activeSubagents: string[];
+  /** Every agent that took part, in the order they first appeared. */
+  participants: string[];
   answer: string;
   result?: AgentResult;
   error?: string;
@@ -68,6 +85,8 @@ export interface RunState {
 export const initialRunState: RunState = {
   phase: 'idle',
   timeline: [],
+  activeSubagents: [],
+  participants: [],
   answer: '',
 };
 
@@ -83,6 +102,14 @@ function replace(
     return update(item);
   });
   return found ? next : timeline;
+}
+
+/** Omit that distributes over the union, instead of collapsing to shared keys. */
+type WithoutDepth<T> = T extends unknown ? Omit<T, 'depth'> : never;
+
+/** Appends an item at the depth of whichever agent currently holds the floor. */
+function append(state: RunState, item: WithoutDepth<TimelineItem>): TimelineItem[] {
+  return [...state.timeline, { ...item, depth: state.activeSubagents.length } as TimelineItem];
 }
 
 /** Pure reducer: AG-UI event stream -> renderable run state. */
@@ -102,10 +129,13 @@ export function applyEvent(state: RunState, event: AguiEvent): RunState {
     case 'STEP_STARTED':
       return {
         ...state,
-        timeline: [
-          ...state.timeline,
-          { kind: 'step', id: `step-${event.stepName}`, name: event.stepName, status: 'running', at },
-        ],
+        timeline: append(state, {
+          kind: 'step',
+          id: `step-${event.stepName}`,
+          name: event.stepName,
+          status: 'running',
+          at,
+        }),
       };
 
     case 'STEP_FINISHED':
@@ -120,10 +150,13 @@ export function applyEvent(state: RunState, event: AguiEvent): RunState {
     case 'TEXT_MESSAGE_START':
       return {
         ...state,
-        timeline: [
-          ...state.timeline,
-          { kind: 'message', id: event.messageId, text: '', status: 'streaming', at },
-        ],
+        timeline: append(state, {
+          kind: 'message',
+          id: event.messageId,
+          text: '',
+          status: 'streaming',
+          at,
+        }),
       };
 
     case 'TEXT_MESSAGE_CONTENT':
@@ -146,16 +179,13 @@ export function applyEvent(state: RunState, event: AguiEvent): RunState {
     case 'TOOL_CALL_START':
       return {
         ...state,
-        timeline: [
-          ...state.timeline,
-          {
-            kind: 'tool',
-            id: event.toolCallId,
-            name: event.toolCallName,
-            status: 'running',
-            at,
-          },
-        ],
+        timeline: append(state, {
+          kind: 'tool',
+          id: event.toolCallId,
+          name: event.toolCallName,
+          status: 'running',
+          at,
+        }),
       };
 
     case 'TOOL_CALL_ARGS':
@@ -194,13 +224,52 @@ export function applyEvent(state: RunState, event: AguiEvent): RunState {
         result: event.snapshot?.result ?? state.result,
       };
 
+    case 'SUBAGENT_STARTED':
+      return {
+        ...state,
+        // Appended at the parent's depth; its own work nests one level deeper.
+        timeline: append(state, {
+          kind: 'subagent',
+          id: event.subagentRunId,
+          name: event.name,
+          description: event.description,
+          status: 'running',
+          at,
+        }),
+        activeSubagents: [...state.activeSubagents, event.subagentRunId],
+        participants: state.participants.includes(event.name)
+          ? state.participants
+          : [...state.participants, event.name],
+      };
+
+    case 'SUBAGENT_FINISHED':
+      return {
+        ...state,
+        timeline: replace(state.timeline, event.subagentRunId, (item) =>
+          item.kind === 'subagent' ? { ...item, status: 'done' } : item,
+        ),
+        activeSubagents: state.activeSubagents.filter((id) => id !== event.subagentRunId),
+      };
+
+    case 'SUBAGENT_ERROR':
+      return {
+        ...state,
+        timeline: replace(state.timeline, event.subagentRunId, (item) =>
+          item.kind === 'subagent' ? { ...item, status: 'failed', error: event.message } : item,
+        ),
+        activeSubagents: state.activeSubagents.filter((id) => id !== event.subagentRunId),
+      };
+
     case 'CUSTOM':
       return {
         ...state,
-        timeline: [
-          ...state.timeline,
-          { kind: 'custom', id: `custom-${state.timeline.length}`, name: event.name, value: event.value, at },
-        ],
+        timeline: append(state, {
+          kind: 'custom',
+          id: `custom-${state.timeline.length}`,
+          name: event.name,
+          value: event.value,
+          at,
+        }),
       };
 
     case 'RUN_ERROR':
@@ -218,7 +287,18 @@ export function applyEvent(state: RunState, event: AguiEvent): RunState {
             : result?.status === 'failed'
               ? 'failed'
               : 'completed';
-      return { ...state, phase, result, endedAt: at };
+      return {
+        ...state,
+        phase,
+        result,
+        endedAt: at,
+        activeSubagents: [],
+        timeline: state.timeline.map((item) =>
+          item.kind === 'subagent' && item.status === 'running'
+            ? { ...item, status: 'done' }
+            : item,
+        ),
+      };
     }
 
     default:
